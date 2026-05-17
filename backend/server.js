@@ -15,6 +15,9 @@ app.use(express.json());
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
+        server: 'ArcFlow Backend',
+        version: '1.2.0',
+        timestamp: new Date().toISOString(),
         supabaseConfigured: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
         circleConfigured: !!process.env.CIRCLE_API_KEY
     });
@@ -285,12 +288,14 @@ app.get('/api/db/history', async (req, res) => {
         const { wallet } = req.query;
         if (!wallet) return res.status(400).json({ error: 'wallet is required' });
         const lower = wallet.toLowerCase();
+        console.log(`[DB] Fetching history for: ${lower}`);
         const { data, error } = await supabase
             .from('transactions')
             .select('*')
             .or(`sender_wallet.ilike.${lower},recipient_wallet.ilike.${lower}`)
             .order('created_at', { ascending: false });
         if (error) throw error;
+        console.log(`[DB] History results: ${data?.length || 0}`);
         res.json({ success: true, data });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -412,6 +417,31 @@ app.post('/api/db/receipts', async (req, res) => {
         const { data, error } = await supabase.from('receipts').insert(req.body).select().single();
         if (error) throw error;
         res.json({ success: true, data });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 11. Get User Assets (Flows + Pending Claims)
+app.get('/api/db/user/assets', async (req, res) => {
+    try {
+        const { wallet } = req.query;
+        if (!wallet) return res.status(400).json({ error: 'wallet is required' });
+        const lower = wallet.toLowerCase();
+        console.log(`[DB] Fetching assets for: ${lower}`);
+
+        const [flows, txs] = await Promise.all([
+            supabase.from('flow_links').select('*').ilike('creator_wallet', lower).order('created_at', { ascending: false }),
+            supabase.from('transactions').select('*').or(`sender_wallet.ilike.${lower},recipient_wallet.ilike.${lower}`).order('created_at', { ascending: false })
+        ]);
+
+        console.log(`[DB] Assets flows: ${flows.data?.length || 0}, txs: ${txs.data?.length || 0}`);
+
+        res.json({
+            success: true,
+            flows: flows.data || [],
+            transactions: txs.data || []
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

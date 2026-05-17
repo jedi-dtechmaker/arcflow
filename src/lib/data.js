@@ -9,6 +9,7 @@ async function api(path, method = "GET", body = null) {
   };
   if (body) options.body = JSON.stringify(body);
   const response = await fetch(`${BACKEND_URL}${path}`, options);
+  console.log(`[API] ${method} ${path} - Status: ${response.status}`);
 
   const contentType = response.headers.get("content-type");
   if (contentType && contentType.includes("application/json")) {
@@ -142,6 +143,19 @@ export function receiptUrl(path) {
 
 export async function saveWalletToUser(userId, wallet) {
   await upsertUser(userId, wallet);
+}
+
+export async function getUserAssets(wallet) {
+  try {
+    const res = await api(`/api/db/user/assets?wallet=${wallet}`);
+    return {
+      flows: res.flows || [],
+      transactions: res.transactions || []
+    };
+  } catch (err) {
+    console.warn("Fetch user assets failed:", err.message);
+    return { flows: [], transactions: [] };
+  }
 }
 
 async function upsertUser(id, wallet) {

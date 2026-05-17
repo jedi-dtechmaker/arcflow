@@ -37,7 +37,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { arcTestnet, ARC_RPC_URL, USDC_ADDRESS } from "@/lib/arc";
 import { sendUsdcOnArc } from "@/lib/circle";
-import { claimPayment, createFlowLink, createPendingSend, getClaim, getDashboardRows, getFlow, markSendComplete, receiptUrl, saveWalletToUser } from "@/lib/data";
+import { claimPayment, createFlowLink, createPendingSend, getClaim, getDashboardRows, getFlow, getUserAssets, markSendComplete, receiptUrl, saveWalletToUser } from "@/lib/data";
 import { formatUsd, makeClaimUrl, makeExplorerUrl, makeFlowUrl } from "@/lib/format";
 import { makeTinyPdf } from "@/lib/pdf";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -216,9 +216,9 @@ function LoginModal({ onClose, circle }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4">
-      <div className="w-full max-w-md overflow-hidden rounded-[3rem] border border-white/10 bg-[#090812] shadow-2xl animate-in fade-in zoom-in-95 duration-300">
-        <div className="relative p-8 sm:p-12">
+    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xl p-4">
+      <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-[2.5rem] border border-white/10 bg-[#090812] shadow-2xl animate-in slide-in-from-bottom-10 sm:zoom-in-95 duration-300">
+        <div className="relative p-6 sm:p-12">
           <Button variant="ghost" size="icon" className="absolute right-6 top-6 rounded-full text-slate-500 hover:text-white" onClick={onClose}><X className="h-5 w-5" /></Button>
 
           <div className="text-center">
@@ -492,30 +492,45 @@ function DashboardAction({ icon: Icon, label, onClick }) {
 }
 
 function SuccessState({ result, navigate }) {
+  const url = result.claimCode ? makeClaimUrl(result.claimCode) : "";
+  const { toast } = useToast();
+
   return (
-    <div className="arc-pop flex min-h-[34rem] flex-col justify-center gap-5 text-center">
-      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-violet-500/15 text-violet-200">
-        <CheckCircle2 className="h-10 w-10" />
+    <div className="flex min-h-[34rem] flex-col justify-center gap-8 text-center animate-in fade-in zoom-in-95 duration-500">
+      <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-[2.5rem] bg-violet-500/15 text-violet-400 shadow-2xl shadow-violet-500/10">
+        {result.claimCode ? <Link2 className="h-12 w-12" /> : <CheckCircle2 className="h-12 w-12" />}
       </div>
+
       <div>
-        <h2 className="text-3xl font-semibold">{result.txHash ? "Money sent" : "Claim link ready"}</h2>
-        <p className="mx-auto mt-2 max-w-sm text-sm text-slate-500">
-          {result.txHash ? "Your on-chain proof and receipt metadata are saved." : "Share this link so the recipient can attach a wallet for payout."}
+        <h2 className="text-4xl font-black text-white tracking-tight">{result.txHash ? "Money Sent!" : "Payment Link Created!"}</h2>
+        <p className="mx-auto mt-3 max-w-sm text-base font-medium text-slate-500 leading-relaxed">
+          {result.txHash ? "Your transfer is complete and the proof has been saved to the blockchain." : "Share this special claim link with the recipient so they can link their wallet."}
         </p>
       </div>
-      {result.txHash ? (
-        <a className="break-all rounded-2xl bg-white/5 p-4 text-sm" href={makeExplorerUrl(result.txHash)} target="_blank">
-          {result.txHash}
-        </a>
-      ) : null}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Button variant="secondary" className="h-12 rounded-2xl" onClick={() => navigator.clipboard.writeText(makeClaimUrl(result.claimCode))}>
-          <Copy className="h-4 w-4" />
-          Copy link
-        </Button>
-        <Button className="h-12 rounded-2xl" onClick={() => navigate("/dashboard")}>
-          View activity
-          <ArrowUpRight className="h-4 w-4" />
+
+      {result.claimCode && (
+        <div className="mx-auto w-full max-w-sm rounded-[2rem] bg-white/5 p-6 border border-white/10 text-left">
+          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">Your Shareable Link</span>
+          <p className="mt-2 break-all font-mono text-sm font-bold text-white mb-6 bg-black/20 p-4 rounded-xl">{url}</p>
+          <Button className="w-full h-14 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-white font-black" onClick={() => { navigator.clipboard.writeText(url); toast({ title: "Link Copied!" }); }}>
+            <Copy className="mr-2 h-4 w-4" />
+            Copy to Clipboard
+          </Button>
+        </div>
+      )}
+
+      {result.txHash && (
+        <div className="mx-auto w-full max-w-sm overflow-hidden rounded-[2rem] border border-white/10 bg-white/5 p-4">
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-2">Transaction Hash</span>
+          <a className="break-all font-mono text-[10px] text-violet-400 hover:text-violet-300" href={makeExplorerUrl(result.txHash)} target="_blank">
+            {result.txHash}
+          </a>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3 sm:flex-row justify-center sm:px-12">
+        <Button variant="secondary" className="h-14 rounded-2xl bg-white/5 border-white/10 text-white font-bold flex-1" onClick={() => navigate("/dashboard")}>
+          Back to Home
         </Button>
       </div>
     </div>
@@ -550,7 +565,7 @@ function TopBar({ navigate, notifications, onClear, circle }) {
             </button>
 
             {showNotifs && (
-              <div className="absolute right-0 mt-3 w-80 overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0f]/95 shadow-2xl backdrop-blur-3xl animate-in zoom-in-95 duration-200">
+              <div className="fixed sm:absolute top-20 left-4 right-4 sm:left-auto sm:right-0 sm:mt-3 sm:w-80 overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0f]/95 shadow-2xl backdrop-blur-3xl animate-in zoom-in-95 duration-200 z-[100]">
                 <div className="flex items-center justify-between border-b border-white/5 p-5">
                   <h3 className="text-sm font-black text-white uppercase tracking-widest">Notifications</h3>
                   <button onClick={onClear} className="text-[10px] font-black text-violet-400 hover:text-violet-300">Clear all</button>
@@ -620,7 +635,7 @@ function TopBar({ navigate, notifications, onClear, circle }) {
 function BottomNav({ path, navigate, onSend }) {
   const items = [
     { label: "Home", icon: LayoutDashboard, href: "/dashboard" },
-    { label: "Assets", icon: WalletCards, href: "/profile" },
+    { label: "Assets", icon: WalletCards, href: "/assets" },
     { label: "Send", icon: ArrowUpRight, onClick: onSend, primary: true },
     { label: "Pay Me", icon: Link2, href: "/flow/new" },
     { label: "Menu", icon: User, href: "/profile" }
@@ -659,6 +674,113 @@ function BottomNav({ path, navigate, onSend }) {
   );
 }
 
+function AssetsPage({ circle }) {
+  const { authenticated, ready, login, wallet } = circle;
+  const { toast } = useToast();
+  const [assets, setAssets] = useState({ flows: [], transactions: [] });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (wallet) {
+      setLoading(true);
+      getUserAssets(wallet).then(setAssets).finally(() => setLoading(false));
+    }
+  }, [wallet]);
+
+  if (!authenticated) return (
+    <CenteredCard>
+      <div className="py-8">
+        <h1 className="text-2xl font-black text-white">Your Assets</h1>
+        <p className="mt-3 text-sm text-slate-500">Connect to view your wallet and links.</p>
+        <Button className="mt-6 h-14 w-full rounded-2xl font-bold shadow-xl shadow-violet-600/20" onClick={login} disabled={!ready}>Connect Wallet</Button>
+      </div>
+    </CenteredCard>
+  );
+
+  return (
+    <div className="mx-auto max-w-lg px-4 pb-32 pt-28">
+      <section className="glass-card overflow-hidden rounded-[2.5rem] p-6 sm:p-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-400 font-mono">Digital Assets</p>
+            <h1 className="text-2xl font-black text-white">My Holdings</h1>
+          </div>
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-600/10 text-violet-400">
+            <WalletCards className="h-6 w-6" />
+          </div>
+        </div>
+
+        <div className="mt-10 space-y-8">
+          {/* Flows Section */}
+          <div className="space-y-4">
+            <h3 className="px-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Active Pay Me Links</h3>
+            {loading ? (
+              <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-slate-700" /></div>
+            ) : assets.flows.length === 0 ? (
+              <p className="px-1 text-[10px] font-black uppercase text-slate-700">No links created yet</p>
+            ) : (
+              <div className="space-y-3">
+                {assets.flows.map(f => (
+                  <div key={f.id} className="group relative flex items-center justify-between rounded-2xl bg-emerald-500/5 p-4 border border-emerald-500/10 transition-all hover:bg-emerald-500/10">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black text-white">{formatUsd(f.amount_usdc)}</span>
+                        <span className="h-3 w-px bg-emerald-500/20" />
+                        <span className="text-[10px] font-black uppercase text-emerald-400 tracking-widest">Active</span>
+                      </div>
+                      <p className="mt-1 truncate text-[10px] font-bold text-slate-500 italic">"{f.note}"</p>
+                    </div>
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(makeFlowUrl(f.slug)); toast({ title: "Flow Link Copied" }); }}
+                      className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 shadow-sm transition hover:bg-emerald-500 hover:text-white"
+                    >
+                      <Link2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="h-px bg-white/5 mx-2" />
+
+          {/* Transactions/Claims Section */}
+          <div className="space-y-4">
+            <h3 className="px-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Transaction Claims</h3>
+            {loading ? (
+              <div className="flex justify-center py-4"><Loader2 className="h-5 w-5 animate-spin text-slate-700" /></div>
+            ) : assets.transactions.length === 0 ? (
+              <p className="px-1 text-[10px] font-black uppercase text-slate-700">No transactions yet</p>
+            ) : (
+              <div className="space-y-3">
+                {assets.transactions.map(t => {
+                  const isSender = t.sender_wallet?.toLowerCase() === wallet.toLowerCase();
+                  const statusColor = t.status === "claimed" || t.status === "completed" ? "text-emerald-400 bg-emerald-400/10" : "text-amber-400 bg-amber-400/10";
+                  return (
+                    <div key={t.id} className="flex items-center justify-between rounded-2xl bg-white/5 p-4 border border-white/5 overflow-hidden">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${statusColor}`}>
+                            {t.status}
+                          </span>
+                          <span className="text-xs font-black text-white">{formatUsd(t.amount_usdc)}</span>
+                        </div>
+                        <p className="mt-1 truncate text-[10px] font-bold text-slate-500">
+                          {isSender ? `To: ${t.recipient_identifier || "Anonymous"}` : `From: ${t.sender_wallet?.slice(0, 8)}...`}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ProfilePage({ circle }) {
   const { authenticated, ready, login, logout, user, wallet } = circle;
   const { toast } = useToast();
@@ -673,10 +795,10 @@ function ProfilePage({ circle }) {
 
   if (!authenticated) return (
     <CenteredCard>
-      <div className="py-8">
+      <div className="py-8 text-center">
         <h1 className="text-2xl font-black text-white">Your Profile</h1>
-        <p className="mt-3 text-sm text-slate-500">Connect to view your wallet details.</p>
-        <Button className="mt-6 h-14 w-full rounded-2xl font-bold shadow-xl shadow-violet-600/20" onClick={login} disabled={!ready}>Connect Wallet</Button>
+        <p className="mt-2 text-sm text-slate-500">Connect to manage your account.</p>
+        <Button className="mt-6 h-14 w-full rounded-2xl font-bold transition-all" onClick={login} disabled={!ready}>Connect Account</Button>
       </div>
     </CenteredCard>
   );
@@ -695,7 +817,7 @@ function ProfilePage({ circle }) {
         <div className="mt-10 space-y-4">
           <div className="rounded-2xl bg-white/5 p-5 border border-white/5">
             <Label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Linked Email</Label>
-            <p className="mt-1 break-all text-lg font-bold text-white">{email}</p>
+            <p className="mt-1 break-all text-sm font-bold text-white">{email}</p>
           </div>
 
           <div className="rounded-2xl bg-white/5 p-5 border border-white/5">
@@ -822,7 +944,7 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
             </section>
 
             <div className="mx-auto max-w-lg px-6 lg:max-w-none lg:px-0">
-              <section className="glass-card -translate-y-8 animate-fade-in-up overflow-hidden rounded-[2.5rem] p-6 [animation-delay:400ms] lg:translate-y-0">
+              <section className="glass-card mt-4 lg:-translate-y-8 animate-fade-in-up overflow-hidden rounded-[2.5rem] p-6 [animation-delay:400ms] lg:translate-y-0">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <h3 className="text-xl font-black text-white">Receive assets</h3>
@@ -935,13 +1057,22 @@ function ClaimPage({ code, addNotification, circle, refreshToggle }) {
   return (
     <div className="mx-auto max-w-2xl px-4 pb-40 pt-28">
       <section className="glass-card overflow-hidden rounded-[3rem] p-8 text-center sm:p-12">
-        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[2rem] bg-emerald-500/10 text-emerald-400 shadow-2xl shadow-emerald-500/20">
-          <ArrowDownLeft className="h-10 w-10" />
+        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-[2.5rem] bg-emerald-500/10 text-emerald-400 shadow-2xl shadow-emerald-500/20">
+          <Download className="h-12 w-12" />
         </div>
         <div className="mt-10">
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">Payment Proof</p>
+          <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">Incoming Payment</p>
           <h1 className="mt-4 text-6xl font-black text-white">{formatUsd(transaction.amount_usdc)}</h1>
-          <p className="mx-auto mt-4 max-w-sm text-lg font-bold text-slate-400">{transaction.note || "Unspecified purpose"}</p>
+
+          <div className="mt-6 flex flex-col items-center justify-center gap-2">
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 italic">From</span>
+            <div className="flex items-center gap-3 rounded-full bg-white/5 px-4 py-2 border border-white/5">
+              <Avatar seed={transaction.sender_wallet || "ArcFlow"} size="xs" />
+              <span className="text-sm font-bold text-white truncate max-w-[12rem]">{transaction.sender_privy_id || transaction.sender_wallet?.slice(0, 10) + "..."}</span>
+            </div>
+          </div>
+
+          <p className="mx-auto mt-6 max-w-sm text-lg font-bold text-slate-400">"{transaction.note || "No note added"}"</p>
         </div>
 
         <div className="mt-12 grid gap-4">
@@ -1033,18 +1164,28 @@ function NewFlowLink({ circle }) {
           </div>
 
           {url && (
-            <div className="animate-fade-in-up rounded-xl bg-emerald-500/10 p-5 border border-emerald-500/20 group relative">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[9px] font-black uppercase tracking-widest text-emerald-400">Link Ready!</p>
-                  <p className="mt-1 break-all font-mono text-xs font-bold text-white pr-10">{url}</p>
+            <div className="fixed inset-0 z-[110] flex items-end justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in slide-in-from-bottom duration-500 sm:items-center">
+              <div className="relative w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-[2.5rem] border border-white/10 bg-[#090812] shadow-2xl p-6 sm:p-10 text-center">
+                <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[2rem] bg-gradient-to-br from-emerald-500 to-teal-500 text-white shadow-xl shadow-emerald-500/40">
+                  <Link2 className="h-10 w-10" />
                 </div>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(url); toast({ title: "Link copied!" }); }}
-                  className="h-10 w-10 flex items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all shadow-lg active:scale-90"
-                >
-                  <Copy className="h-5 w-5" />
-                </button>
+                <h2 className="mt-8 text-3xl font-black text-white">Link Ready!</h2>
+                <p className="mt-4 text-slate-400 font-medium leading-relaxed">
+                  Anyone with this link can pay you directly to your ArcFlow wallet.
+                </p>
+                <div className="mt-8 rounded-2xl bg-white/5 p-5 border border-white/10 text-left">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">Payment Link</span>
+                  <p className="mt-2 break-all font-mono text-sm font-bold text-white selection:bg-emerald-500/30">{url}</p>
+                </div>
+                <div className="mt-8 grid grid-cols-2 gap-4">
+                  <Button variant="secondary" className="h-14 rounded-2xl font-bold" onClick={() => { navigator.clipboard.writeText(url); toast({ title: "Copied!" }); }}>
+                    <Copy className="h-4 w-4" />
+                    Copy
+                  </Button>
+                  <Button className="h-14 rounded-2xl font-bold" onClick={() => setUrl("")}>
+                    Done
+                  </Button>
+                </div>
               </div>
             </div>
           )}
@@ -1090,6 +1231,7 @@ function Home({ navigate, initialParams, onComplete, circle }) {
   const [receipt, setReceipt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
+  const [useLink, setUseLink] = useState(false);
 
   const preview = useMemo(() => {
     const parsed = Number(amount || 0);
@@ -1100,14 +1242,15 @@ function Home({ navigate, initialParams, onComplete, circle }) {
     if (!ready) return;
     if (!authenticated) return login();
     const numericAmount = Number(amount);
-    if (!numericAmount || numericAmount <= 0 || !recipient.trim()) return toast({ title: "Add an amount and recipient", tone: "error" });
+    if (!numericAmount || numericAmount <= 0) return toast({ title: "Please enter an amount", tone: "error" });
+    if (!useLink && !recipient.trim()) return toast({ title: "Add a recipient or check 'Send via Link'", tone: "error" });
     if (!wallet) return toast({ title: "No wallet ready", description: "Please wait for your Circle wallet to be set up.", tone: "error" });
 
     setBusy(true);
     try {
       const pending = await createPendingSend({
         amount: numericAmount,
-        recipient,
+        recipient: useLink ? "Claim Link" : recipient,
         note,
         targetAsset: asset,
         receipt,
@@ -1130,10 +1273,10 @@ function Home({ navigate, initialParams, onComplete, circle }) {
     }
   }
 
-  if (result) return <div className="p-6"><SuccessState result={result} navigate={(href) => { onComplete?.(); navigate(href); }} /></div>;
+  if (result) return <div className="p-4 sm:p-6"><SuccessState result={result} navigate={(href) => { onComplete?.(); navigate(href); }} /></div>;
 
   return (
-    <div className="mx-auto max-w-2xl p-6 sm:p-10">
+    <div className="mx-auto max-w-lg p-4 sm:p-10">
       <div className="space-y-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -1145,7 +1288,7 @@ function Home({ navigate, initialParams, onComplete, circle }) {
           </div>
         </div>
 
-        <div className="group relative overflow-hidden rounded-[2.5rem] bg-white/5 p-8 transition-all hover:bg-white/[0.08]">
+        <div className="group relative overflow-hidden rounded-[2.5rem] bg-white/5 p-6 sm:p-8 transition-all hover:bg-white/[0.08]">
           <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-violet-600/10 blur-3xl group-hover:bg-violet-600/20" />
           <Label htmlFor="amount" className="text-xs font-black uppercase tracking-widest text-slate-500">Amount to send</Label>
           <div className="mt-4 flex items-baseline gap-3">
@@ -1162,31 +1305,45 @@ function Home({ navigate, initialParams, onComplete, circle }) {
           </div>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-[1fr_10rem]">
-          <div className="space-y-2">
-            <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">Recipient</Label>
-            <Input
-              placeholder="email, phone, @xhandle, or 0x wallet"
-              value={recipient}
-              onChange={(event) => setRecipient(event.target.value)}
-              className="h-16 rounded-2xl border-white/5 bg-white/5 px-5 font-bold focus:border-violet-500/50"
-            />
+        <button
+          onClick={() => { setUseLink(!useLink); if (!useLink) setRecipient(""); }}
+          className={`group flex items-center justify-between rounded-2xl border p-5 transition-all ${useLink ? "border-emerald-500/50 bg-emerald-500/10" : "border-white/10 bg-white/5 hover:bg-white/10"}`}
+        >
+          <div className="flex items-center gap-4">
+            <div className={`flex h-10 w-10 items-center justify-center rounded-xl transition-colors ${useLink ? "bg-emerald-500 text-white" : "bg-white/5 text-slate-500"}`}>
+              <Link2 className="h-5 w-5" />
+            </div>
+            <div className="text-left">
+              <h4 className="text-sm font-bold text-white">Send via Link</h4>
+              <p className="text-[10px] font-black uppercase text-slate-500 tracking-tight">Recipients can claim in one tap</p>
+            </div>
           </div>
-          <div className="space-y-2">
-            <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">Preview</Label>
-            <Select
-              value={asset}
-              onChange={(event) => setAsset(event.target.value)}
-              className="h-16 rounded-2xl border-white/5 bg-white/5 px-5 font-bold focus:border-violet-500/50"
-            >
-              <option>USDC</option>
-              <option>EURC</option>
-              <option>BRLA</option>
-              <option>MXN</option>
-              <option>NGN</option>
-            </Select>
+          <div className={`h-6 w-11 rounded-full p-1 transition-all ${useLink ? "bg-emerald-500" : "bg-slate-800"}`}>
+            <div className={`h-4 w-4 rounded-full bg-white transition-all ${useLink ? "translate-x-5" : "translate-x-0"}`} />
           </div>
-        </div>
+        </button>
+
+        {!useLink && (
+          <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="grid gap-4 sm:grid-cols-[1fr_10rem]">
+              <div className="space-y-2">
+                <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">Recipient</Label>
+                <Input
+                  placeholder="email, phone, @xhandle, or 0x wallet"
+                  value={recipient}
+                  onChange={(event) => setRecipient(event.target.value)}
+                  className="h-16 rounded-2xl border-white/5 bg-white/5 px-5 font-bold focus:border-violet-500/50"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">Preview</Label>
+                <div className="flex h-16 items-center rounded-2xl border border-white/5 bg-white/5 px-5 font-bold text-white italic">
+                  {asset}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex items-center justify-between rounded-2xl bg-violet-600/5 px-5 py-4 border border-violet-500/10">
           <span className="text-sm font-bold text-violet-300/80 uppercase tracking-wider">Recipient receives</span>
@@ -1538,6 +1695,7 @@ export function App() {
 
       {path === "/" && <LandingPage navigate={navigate} circle={circle} />}
       {path === "/dashboard" && <Dashboard navigate={navigate} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} setShowFund={setShowFund} refreshToggle={refreshToggle} />}
+      {path === "/assets" && <AssetsPage circle={circle} />}
       {path === "/profile" && <ProfilePage circle={circle} />}
       {claimCode && <ClaimPage code={claimCode} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} refreshToggle={refreshToggle} />}
       {path === "/flow/new" && <NewFlowLink circle={circle} />}
@@ -1549,8 +1707,8 @@ export function App() {
 
       {showSend && (
         <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 p-4 backdrop-blur-sm sm:items-center">
-          <div className="w-full max-w-xl animate-in slide-in-from-bottom-10 bg-[#090812] rounded-[2.5rem] overflow-hidden">
-            <div className="p-1">
+          <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto animate-in slide-in-from-bottom-10 bg-[#090812] rounded-[2.5rem]">
+            <div className="p-0">
               <Home initialParams={sendParams} onComplete={() => setShowSend(false)} navigate={navigate} circle={circle} />
             </div>
             <Button variant="ghost" className="mb-4 mx-auto block text-slate-500" onClick={() => { setShowSend(false); setSendParams(null); }}>Dismiss</Button>
@@ -1569,8 +1727,8 @@ export function App() {
 
 
       {showWithdraw && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-500">
-          <div className="relative w-full max-w-md overflow-hidden rounded-[2.5rem] border border-white/10 bg-[#090812] shadow-2xl p-8 text-center">
+        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-500">
+          <div className="relative w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-[2.5rem] border border-white/10 bg-[#090812] shadow-2xl p-6 sm:p-8 text-center">
             <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[2rem] bg-gradient-to-br from-violet-600 to-fuchsia-600 text-white shadow-xl shadow-violet-600/40">
               <Download className="h-10 w-10" />
             </div>
