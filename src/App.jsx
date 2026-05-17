@@ -44,7 +44,7 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 const fxRates = { USDC: 1, EURC: 0.92, BRLA: 5.12, MXN: 16.8, NGN: 1450 };
 const ARC_FAUCET_URL = "https://faucet.circle.com";
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL || "http://localhost:3001").replace(/\/$/, "");
 
 /**
  * Custom Circle Hook for managing Auth and Wallet State
