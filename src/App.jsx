@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-import { usePrivy, useWallets } from "@privy-io/react-auth";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -38,26 +37,317 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { arcTestnet, ARC_RPC_URL, USDC_ADDRESS } from "@/lib/arc";
 import { sendUsdcOnArc } from "@/lib/circle";
-import { claimPayment, createFlowLink, createPendingSend, getClaim, getDashboardRows, getFlow, markSendComplete, receiptUrl } from "@/lib/data";
+import { claimPayment, createFlowLink, createPendingSend, getClaim, getDashboardRows, getFlow, markSendComplete, receiptUrl, saveWalletToUser } from "@/lib/data";
 import { formatUsd, makeClaimUrl, makeExplorerUrl, makeFlowUrl } from "@/lib/format";
 import { makeTinyPdf } from "@/lib/pdf";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 const fxRates = { USDC: 1, EURC: 0.92, BRLA: 5.12, MXN: 16.8, NGN: 1450 };
 const ARC_FAUCET_URL = "https://faucet.circle.com";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
 
-function walletAddressFrom(user, wallets) {
-  return (
-    wallets?.find((item) => item.walletClientType === "privy")?.address ||
-    wallets?.[0]?.address ||
-    user?.wallet?.address ||
-    user?.linkedAccounts?.find((account) => account.type === "wallet")?.address ||
-    ""
-  );
+/**
+ * Custom Circle Hook for managing Auth and Wallet State
+ */
+function useCircleAuth() {
+  const [authenticated, setAuthenticated] = useState(!!localStorage.getItem("circle_user_id"));
+  const [user, setUser] = useState(localStorage.getItem("circle_user_id") ? { id: localStorage.getItem("circle_user_id") } : null);
+  const [wallet, setWallet] = useState(localStorage.getItem("circle_wallet_address"));
+  const [ready, setReady] = useState(true);
+  const [showLogin, setShowLogin] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const userId = localStorage.getItem("circle_user_id");
+    if (!userId) return;
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/db/user/wallet?id=${userId}`);
+      if (!response.ok) {
+        // Fallback for direct managed derivation if DB lookup fails
+        setWallet(localStorage.getItem("circle_wallet_address"));
+        return;
+      }
+      const data = await response.json();
+      if (data.wallet) {
+        setWallet(data.wallet);
+        localStorage.setItem("circle_wallet_address", data.wallet);
+      }
+    } catch (err) {
+      console.error("Refresh failed:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authenticated) refresh();
+  }, [authenticated, refresh]);
+
+  const login = () => setShowLogin(true);
+
+  const sendOtp = async (email) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/otp/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      const ct = res.headers.get("content-type");
+      if (!ct || !ct.includes("application/json")) {
+        throw new Error(`Server returned non-JSON. Check if VITE_BACKEND_URL is correct.`);
+      }
+      return res.json();
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const verifyOtp = async (email, code) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/otp/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code })
+      });
+      const ct = res.headers.get("content-type");
+      if (!ct || !ct.includes("application/json")) {
+        throw new Error(`Server returned non-JSON. Check if VITE_BACKEND_URL is correct.`);
+      }
+      const data = await res.json();
+      if (data.success) {
+        handleLoginSuccess(data);
+      }
+      return data;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const connectExternal = async () => {
+    if (!window.ethereum) throw new Error("MetaMask not found. Please install it to connect.");
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const address = accounts[0];
+
+    const res = await fetch(`${BACKEND_URL}/api/auth/external`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address })
+    });
+    const data = await res.json();
+    if (data.success) {
+      handleLoginSuccess(data);
+    }
+    return data;
+  };
+
+  const handleLoginSuccess = (data) => {
+    localStorage.setItem("circle_user_id", data.userId);
+    localStorage.setItem("circle_wallet_address", data.walletAddress);
+    setUser({ id: data.userId, isExternal: data.isExternal });
+    setWallet(data.walletAddress);
+    setAuthenticated(true);
+    setShowLogin(false);
+  };
+
+  const logout = () => {
+    localStorage.removeItem("circle_user_id");
+    localStorage.removeItem("circle_wallet_address");
+    setUser(null);
+    setAuthenticated(false);
+    setWallet(null);
+  };
+
+  return { authenticated, user, wallet, setWallet, ready, login, sendOtp, verifyOtp, connectExternal, logout, refresh, showLogin, setShowLogin };
 }
 
 function openFaucet() {
   window.open(ARC_FAUCET_URL, "_blank", "noopener,noreferrer");
+}
+
+function LoginModal({ onClose, circle }) {
+  const [tab, setTab] = useState("email"); // email | wallet
+  const [step, setStep] = useState("input"); // input | verify
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const { toast } = useToast();
+
+  async function handleSend(e) {
+    if (e) e.preventDefault();
+    if (!email.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await circle.sendOtp(email.trim().toLowerCase());
+      if (res.success) setStep("verify");
+      else throw new Error(res.error || "Could not send OTP");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleVerify(e) {
+    if (e) e.preventDefault();
+    if (!otp.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await circle.verifyOtp(email.trim().toLowerCase(), otp.trim());
+      if (!res.success) throw new Error(res.error || "Invalid OTP");
+      toast({ title: "Welcome back!", description: "You are now securely logged in." });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleExternal() {
+    setBusy(true);
+    setError("");
+    try {
+      await circle.connectExternal();
+      toast({ title: "MetaMask Connected", description: "Your external wallet is linked." });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4">
+      <div className="w-full max-w-md overflow-hidden rounded-[3rem] border border-white/10 bg-[#090812] shadow-2xl animate-in fade-in zoom-in-95 duration-300">
+        <div className="relative p-8 sm:p-12">
+          <Button variant="ghost" size="icon" className="absolute right-6 top-6 rounded-full text-slate-500 hover:text-white" onClick={onClose}><X className="h-5 w-5" /></Button>
+
+          <div className="text-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-600 text-white shadow-xl shadow-violet-600/30">
+              <Shield className="h-8 w-8" />
+            </div>
+            <h2 className="mt-8 text-3xl font-black tracking-tight text-white">Security Check</h2>
+            <p className="mt-3 text-slate-400 font-medium">Connect to your ArcFlow account</p>
+          </div>
+
+          <div className="mt-10 flex gap-2 rounded-2xl bg-white/5 p-1.5">
+            <button onClick={() => setTab("email")} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${tab === "email" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Email OTP</button>
+            <button onClick={() => setTab("wallet")} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${tab === "wallet" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Connect Wallet</button>
+          </div>
+
+          <div className="mt-8">
+            {tab === "email" ? (
+              step === "input" ? (
+                <form onSubmit={handleSend} className="space-y-6">
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Email Address</Label>
+                    <Input type="email" placeholder="name@example.com" value={email} onChange={e => setEmail(e.target.value)} className="h-14 rounded-2xl border-white/10 bg-white/5 text-lg font-bold text-white focus:border-violet-500/50" />
+                  </div>
+                  {error && <p className="text-sm font-bold text-rose-500 ml-1">Error: {error}</p>}
+                  <Button disabled={busy} className="h-14 w-full rounded-2xl text-lg font-black shadow-xl shadow-violet-600/30 hover:scale-[1.01] active:scale-95 transition-all">
+                    {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : "Verify Identity"}
+                  </Button>
+                </form>
+              ) : (
+                <form onSubmit={handleVerify} className="space-y-6">
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Enter code sent to {email}</Label>
+                    <Input type="text" placeholder="6-digit code" value={otp} onChange={e => setOtp(e.target.value)} className="h-14 rounded-2xl border-white/10 bg-white/5 text-center text-3xl font-black tracking-[0.5em] text-white focus:border-violet-500/50" />
+                  </div>
+                  {error && <p className="text-sm font-bold text-rose-500 ml-1">{error}</p>}
+                  <Button disabled={busy} className="h-14 w-full rounded-2xl text-lg font-black bg-emerald-600 hover:bg-emerald-500 shadow-xl shadow-emerald-600/20">
+                    {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : "Complete Login"}
+                  </Button>
+                  <button type="button" onClick={() => setStep("input")} className="w-full text-xs font-black uppercase tracking-widest text-violet-400 hover:text-violet-300">Wrong email? Go back</button>
+                </form>
+              )
+            ) : (
+              <div className="space-y-6">
+                <Button onClick={handleExternal} disabled={busy} className="h-16 w-full rounded-2xl border border-white/10 bg-white/5 text-lg font-bold text-white hover:bg-white/10 transition-all flex items-center justify-center gap-3">
+                  <img src="https://upload.wikimedia.org/wikipedia/commons/3/36/MetaMask_Mirror_Logo.svg" className="h-8 w-8" alt="MetaMask" />
+                  Continue with MetaMask
+                </Button>
+                <Button onClick={handleExternal} disabled={busy} className="h-16 w-full rounded-2xl border border-white/10 bg-white/5 text-lg font-bold text-white hover:bg-white/10 transition-all flex items-center justify-center gap-3">
+                  <Smartphone className="h-7 w-7 text-blue-400" />
+                  Coinbase Wallet
+                </Button>
+                {error && <p className="text-sm font-bold text-rose-500 text-center">{error}</p>}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FundModal({ onClose, wallet, onComplete }) {
+  const [amount, setAmount] = useState("500");
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+
+  async function handleFund() {
+    setBusy(true);
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/fund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetWallet: wallet, amount: Number(amount) })
+      });
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error || "Funding failed");
+      toast({ title: "Funds requested", description: `We sent ${amount} USDC to your wallet.` });
+      onComplete?.();
+      onClose();
+    } catch (err) {
+      toast({ title: "Funding failed", description: err.message, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-md p-4" onClick={onClose}>
+      <div className="w-full max-w-sm rounded-[2.5rem] border border-white/10 bg-[#0e0c1e] p-8 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/20 text-emerald-400">
+          <Plus className="h-8 w-8" />
+        </div>
+        <h2 className="mt-6 text-2xl font-black text-white">Add Test Funds</h2>
+        <p className="mt-2 text-sm text-slate-400">Request free USDC on Arc Testnet to explore the app.</p>
+
+        <div className="mt-8 space-y-6">
+          <div className="space-y-3">
+            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Amount (USDC)</label>
+            <div className="relative group">
+              <span className="absolute left-5 top-1/2 -translate-y-1/2 text-2xl font-black text-slate-600">$</span>
+              <Input
+                type="number"
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+                className="h-16 pl-10 rounded-2xl border-white/10 bg-white/5 text-2xl font-black text-white focus:border-violet-500/60 transition-all"
+                placeholder="0"
+              />
+            </div>
+            <div className="flex gap-2">
+              {["100", "500", "1500", "5000"].map(val => (
+                <button
+                  key={val}
+                  onClick={() => setAmount(val)}
+                  className={`flex-1 py-2 rounded-xl text-[10px] font-black border transition-all ${amount === val ? "bg-violet-600 border-violet-500 text-white" : "bg-white/5 border-white/5 text-slate-500 hover:bg-white/10"}`}
+                >
+                  ${val}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Button onClick={handleFund} disabled={busy} className="h-14 w-full rounded-2xl bg-emerald-600 text-base font-black hover:bg-emerald-500">
+            {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : "Request Funds"}
+          </Button>
+          <Button variant="ghost" className="w-full text-slate-500" onClick={onClose}>Dismiss</Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function downloadBlob(content, filename, type) {
@@ -87,9 +377,9 @@ function Avatar({ seed, size = "md" }) {
 
   return (
     <div className={`shrink-0 overflow-hidden rounded-2xl bg-white/5 border border-white/10 shadow-2xl ${sizes[size]}`}>
-      <img 
-        src={avatarUrl} 
-        alt="Avatar" 
+      <img
+        src={avatarUrl}
+        alt="Avatar"
         className="h-full w-full object-cover"
         onError={(e) => {
           e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(seed || 'A')}&background=random`;
@@ -101,7 +391,7 @@ function Avatar({ seed, size = "md" }) {
 
 function SettingsItem({ icon: Icon, label, value, onClick }) {
   return (
-    <button 
+    <button
       onClick={onClick}
       className="flex w-full items-center justify-between rounded-2xl bg-white/5 p-4 border border-white/5 transition hover:bg-white/[0.08] active:scale-[0.98]"
     >
@@ -232,12 +522,10 @@ function SuccessState({ result, navigate }) {
   );
 }
 
-function TopBar({ navigate, notifications, onClear }) {
-  const { ready, authenticated, login, logout, user } = usePrivy();
-  const { wallets } = useWallets();
+function TopBar({ navigate, notifications, onClear, circle }) {
+  const { authenticated, login, logout, user, wallet, ready } = circle;
   const [showNotifs, setShowNotifs] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
-  const wallet = walletAddressFrom(user, wallets);
   const unreadCount = notifications.filter(n => !n.read).length;
 
   return (
@@ -251,9 +539,9 @@ function TopBar({ navigate, notifications, onClear }) {
 
         <div className="flex items-center gap-4">
           <button className="hidden text-sm font-bold text-slate-400 transition-colors hover:text-white sm:inline-flex" onClick={() => navigate("/dashboard")}>Dashboard</button>
-          
+
           <div className="relative">
-            <button 
+            <button
               onClick={() => { setShowNotifs(!showNotifs); setShowAccount(false); }}
               className={`flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 text-slate-400 transition-all hover:bg-white/10 hover:text-white ${unreadCount > 0 ? "text-violet-400" : ""}`}
             >
@@ -289,10 +577,10 @@ function TopBar({ navigate, notifications, onClear }) {
           </div>
 
           <div className="h-4 w-px bg-white/10 hidden sm:block" />
-          
+
           <div className="relative">
-            <Button 
-              variant={authenticated ? "secondary" : "default"} 
+            <Button
+              variant={authenticated ? "secondary" : "default"}
               onClick={() => {
                 if (authenticated) {
                   setShowAccount(!showAccount);
@@ -300,8 +588,8 @@ function TopBar({ navigate, notifications, onClear }) {
                 } else {
                   login();
                 }
-              }} 
-              disabled={!ready} 
+              }}
+              disabled={!ready}
               className="h-11 rounded-xl px-5 font-bold shadow-xl transition-all"
             >
               {authenticated ? (wallet ? `${wallet.slice(0, 6)}...${wallet.slice(-4)}` : "SETUP") : "CONNECT"}
@@ -313,7 +601,7 @@ function TopBar({ navigate, notifications, onClear }) {
                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Account</p>
                   <p className="mt-1 truncate text-xs font-bold text-white opacity-60">{user?.email?.address || "Active Session"}</p>
                 </div>
-                <button 
+                <button
                   onClick={logout}
                   className="flex w-full items-center gap-3 rounded-2xl p-4 text-sm font-bold text-red-400 transition hover:bg-red-500/10"
                 >
@@ -371,13 +659,11 @@ function BottomNav({ path, navigate, onSend }) {
   );
 }
 
-function ProfilePage() {
-  const { authenticated, ready, login, logout, user } = usePrivy();
-  const { wallets } = useWallets();
+function ProfilePage({ circle }) {
+  const { authenticated, ready, login, logout, user, wallet } = circle;
   const { toast } = useToast();
-  const wallet = walletAddressFrom(user, wallets);
-  const email = user?.email?.address || "No email connected";
-  const displayName = user?.email?.address?.split("@")[0] || "User";
+  const email = user?.id || "No email connected";
+  const displayName = user?.id?.split("@")[0] || "User";
 
   async function copyWallet() {
     if (!wallet) return;
@@ -411,7 +697,7 @@ function ProfilePage() {
             <Label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Linked Email</Label>
             <p className="mt-1 break-all text-lg font-bold text-white">{email}</p>
           </div>
-          
+
           <div className="rounded-2xl bg-white/5 p-5 border border-white/5">
             <div className="flex items-center justify-between">
               <Label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Active Wallet</Label>
@@ -427,10 +713,10 @@ function ProfilePage() {
         </div>
 
         <div className="mt-10 space-y-3">
-           <h3 className="px-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Wallet Settings</h3>
-           <SettingsItem icon={Shield} label="Security" value="FaceID" onClick={() => toast({ title: "Security Settings", description: "Biometric authentication is managed by your device." })} />
-           <SettingsItem icon={Globe} label="Network" value="Arc Testnet" onClick={() => toast({ title: "Network", description: "You are currently on Arc Testnet (Layer 2)." })} />
-           <SettingsItem icon={Smartphone} label="Connected Apps" value="Manage" onClick={() => toast({ title: "Coming Soon", description: "Connected apps management will be available in the next update." })} />
+          <h3 className="px-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Wallet Settings</h3>
+          <SettingsItem icon={Shield} label="Security" value="FaceID" onClick={() => toast({ title: "Security Settings", description: "Biometric authentication is managed by your device." })} />
+          <SettingsItem icon={Globe} label="Network" value="Arc Testnet" onClick={() => toast({ title: "Network", description: "You are currently on Arc Testnet (Layer 2)." })} />
+          <SettingsItem icon={Smartphone} label="Connected Apps" value="Manage" onClick={() => toast({ title: "Coming Soon", description: "Connected apps management will be available in the next update." })} />
         </div>
 
         <Button variant="secondary" className="mt-10 h-14 w-full rounded-2xl border border-white/5 bg-white/5 font-bold transition-all hover:bg-red-500/10 hover:text-red-400" onClick={logout}>
@@ -441,10 +727,8 @@ function ProfilePage() {
   );
 }
 
-function Dashboard({ navigate, addNotification }) {
-  const { authenticated, login, user } = usePrivy();
-  const { wallets } = useWallets();
-  const wallet = walletAddressFrom(user, wallets);
+function Dashboard({ navigate, addNotification, circle, setShowFund, refreshToggle }) {
+  const { authenticated, login, user, wallet } = circle;
   const [tab, setTab] = useState("sent");
   const [rows, setRows] = useState([]);
   const [balance, setBalance] = useState("0.00");
@@ -452,7 +736,7 @@ function Dashboard({ navigate, addNotification }) {
 
   useEffect(() => {
     if (wallet) refresh();
-  }, [wallet]);
+  }, [wallet, refreshToggle]);
 
   async function refresh() {
     if (!wallet || !isSupabaseConfigured) return;
@@ -468,13 +752,13 @@ function Dashboard({ navigate, addNotification }) {
         client.getBalance({ address: wallet }).catch(() => 0n)
       ]);
       setRows(dashboardRows);
-      
+
       const erc20Formatted = Number(formatUnits(erc20Balance, 6));
       const nativeFormatted = Number(formatUnits(nativeBalance, 18));
       const totalBalance = Math.max(erc20Formatted, nativeFormatted);
-      
+
       const newBalanceStr = totalBalance.toLocaleString(undefined, { maximumFractionDigits: 2 });
-      
+
       // Notify if balance increased
       if (balance !== "0.00" && totalBalance > Number(balance.replace(/,/g, ''))) {
         addNotification({
@@ -501,12 +785,12 @@ function Dashboard({ navigate, addNotification }) {
     <main className="min-h-screen bg-[#05050a] pb-40 pt-20">
       <div className="mx-auto max-w-7xl lg:px-8 lg:pt-12">
         <div className="grid gap-0 lg:grid-cols-[1fr_1.2fr] lg:gap-12 lg:pt-12">
-          
+
           {/* Left Column: Immersive Header & Assets */}
           <div className="space-y-0 lg:space-y-8">
             <section className="relative mesh-gradient overflow-hidden pb-16 pt-10 text-center text-white shadow-2xl lg:rounded-[3rem] lg:pb-12">
               <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/40" />
-              
+
               <div className="relative z-10 mx-auto max-w-lg px-6">
                 <div className="flex items-center justify-between opacity-90">
                   <Avatar seed={displayName} size="md" />
@@ -529,7 +813,7 @@ function Dashboard({ navigate, addNotification }) {
                 </div>
 
                 <div className="mt-12 flex justify-around gap-2 animate-fade-in-up [animation-delay:200ms]">
-                  <HeaderAction icon={Plus} label="Add" onClick={openFaucet} />
+                  <HeaderAction icon={Plus} label="Add" onClick={() => setShowFund(true)} />
                   <HeaderAction icon={ArrowUpRight} label="Send" onClick={() => navigate("/send")} />
                   <HeaderAction icon={Link2} label="Pay Me" onClick={() => navigate("/flow/new")} />
                   <HeaderAction icon={Download} label="Withdraw" onClick={() => setShowWithdraw(true)} />
@@ -548,7 +832,7 @@ function Dashboard({ navigate, addNotification }) {
                     <WalletCards className="h-6 w-6" />
                   </span>
                 </div>
-                <button 
+                <button
                   onClick={() => {
                     navigator.clipboard.writeText(wallet);
                     toast({ title: "Address Copied!" });
@@ -616,20 +900,18 @@ function SetupNotice() {
   );
 }
 
-function ClaimPage({ code, addNotification }) {
-  const { authenticated, login, user } = usePrivy();
-  const { wallets } = useWallets();
+function ClaimPage({ code, addNotification, circle, refreshToggle }) {
+  const { authenticated, login, user, wallet } = circle;
   const { toast } = useToast();
   const [transaction, setTransaction] = useState(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     getClaim(code).then(setTransaction);
-  }, [code]);
+  }, [code, refreshToggle]);
 
   async function handleClaim() {
     if (!authenticated) return login();
-    const wallet = wallets[0]?.address;
     if (!wallet) return toast({ title: "Wallet is still provisioning", tone: "error" });
     setBusy(true);
     try {
@@ -691,9 +973,8 @@ function ClaimPage({ code, addNotification }) {
   );
 }
 
-function NewFlowLink() {
-  const { authenticated, login, user } = usePrivy();
-  const { wallets } = useWallets();
+function NewFlowLink({ circle }) {
+  const { authenticated, login, user, wallet } = circle;
   const { toast } = useToast();
   const [amount, setAmount] = useState("250");
   const [note, setNote] = useState("Design work");
@@ -704,7 +985,7 @@ function NewFlowLink() {
     if (!authenticated) return login();
     setBusy(true);
     try {
-      const slug = await createFlowLink({ amount: Number(amount), note, creatorPrivyId: user?.id, creatorWallet: wallets[0]?.address });
+      const slug = await createFlowLink({ amount: Number(amount), note, creatorPrivyId: user?.id, creatorWallet: wallet });
       const nextUrl = makeFlowUrl(slug);
       setUrl(nextUrl);
       await navigator.clipboard.writeText(nextUrl);
@@ -744,17 +1025,27 @@ function NewFlowLink() {
 
           <div className="space-y-2">
             <Label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Request Note</Label>
-            <Textarea 
-              value={note} 
+            <Textarea
+              value={note}
               onChange={(event) => setNote(event.target.value)}
               className="min-h-[100px] rounded-xl border-white/5 bg-white/5 p-4 text-base font-bold focus:border-violet-500/50"
             />
           </div>
 
           {url && (
-            <div className="animate-fade-in-up rounded-xl bg-emerald-500/10 p-4 border border-emerald-500/20">
-              <p className="text-[9px] font-black uppercase tracking-widest text-emerald-400">Link Copied!</p>
-              <p className="mt-1 break-all font-mono text-xs font-bold text-white">{url}</p>
+            <div className="animate-fade-in-up rounded-xl bg-emerald-500/10 p-5 border border-emerald-500/20 group relative">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-emerald-400">Link Ready!</p>
+                  <p className="mt-1 break-all font-mono text-xs font-bold text-white pr-10">{url}</p>
+                </div>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(url); toast({ title: "Link copied!" }); }}
+                  className="h-10 w-10 flex items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all shadow-lg active:scale-90"
+                >
+                  <Copy className="h-5 w-5" />
+                </button>
+              </div>
             </div>
           )}
 
@@ -789,9 +1080,8 @@ function FlowPay({ slug, navigate }) {
   );
 }
 
-function Home({ navigate, initialParams, onComplete }) {
-  const { authenticated, ready, login, user } = usePrivy();
-  const { wallets } = useWallets();
+function Home({ navigate, initialParams, onComplete, circle }) {
+  const { authenticated, ready, login, user, wallet } = circle;
   const { toast } = useToast();
   const [amount, setAmount] = useState(initialParams?.amount ?? "");
   const [recipient, setRecipient] = useState(initialParams?.recipient ?? "");
@@ -800,8 +1090,6 @@ function Home({ navigate, initialParams, onComplete }) {
   const [receipt, setReceipt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
-  const wallet = wallets.find((item) => item.walletClientType === "privy") ?? wallets[0];
-  const displayWallet = wallet?.address || walletAddressFrom(user, wallets);
 
   const preview = useMemo(() => {
     const parsed = Number(amount || 0);
@@ -813,14 +1101,22 @@ function Home({ navigate, initialParams, onComplete }) {
     if (!authenticated) return login();
     const numericAmount = Number(amount);
     if (!numericAmount || numericAmount <= 0 || !recipient.trim()) return toast({ title: "Add an amount and recipient", tone: "error" });
-    if (!wallet) return toast({ title: "No wallet is ready yet", description: "Privy is still provisioning your embedded wallet.", tone: "error" });
+    if (!wallet) return toast({ title: "No wallet ready", description: "Please wait for your Circle wallet to be set up.", tone: "error" });
 
     setBusy(true);
     try {
-      const pending = await createPendingSend({ amount: numericAmount, recipient, note, targetAsset: asset, receipt, senderPrivyId: user?.id, senderWallet: wallet.address });
+      const pending = await createPendingSend({
+        amount: numericAmount,
+        recipient,
+        note,
+        targetAsset: asset,
+        receipt,
+        senderPrivyId: user?.id,
+        senderWallet: wallet
+      });
       if (pending.recipientWallet) {
-        const txHash = await sendUsdcOnArc({ wallet, recipient: pending.recipientWallet, amount: numericAmount.toString() });
-        await markSendComplete(pending.id, txHash, wallet.address);
+        const txHash = await sendUsdcOnArc({ userId: user.id, recipient: pending.recipientWallet, amount: numericAmount.toString() });
+        await markSendComplete(pending.id, txHash, wallet);
         setResult({ txHash, claimCode: pending.claimCode });
         toast({ title: "USDC sent", description: "Proof saved and claim link is ready." });
       } else {
@@ -869,17 +1165,17 @@ function Home({ navigate, initialParams, onComplete }) {
         <div className="grid gap-4 sm:grid-cols-[1fr_10rem]">
           <div className="space-y-2">
             <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">Recipient</Label>
-            <Input 
-              placeholder="email, phone, @xhandle, or 0x wallet" 
-              value={recipient} 
+            <Input
+              placeholder="email, phone, @xhandle, or 0x wallet"
+              value={recipient}
               onChange={(event) => setRecipient(event.target.value)}
               className="h-16 rounded-2xl border-white/5 bg-white/5 px-5 font-bold focus:border-violet-500/50"
             />
           </div>
           <div className="space-y-2">
             <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">Preview</Label>
-            <Select 
-              value={asset} 
+            <Select
+              value={asset}
               onChange={(event) => setAsset(event.target.value)}
               className="h-16 rounded-2xl border-white/5 bg-white/5 px-5 font-bold focus:border-violet-500/50"
             >
@@ -899,9 +1195,9 @@ function Home({ navigate, initialParams, onComplete }) {
 
         <div className="space-y-2">
           <Label className="text-xs font-black uppercase tracking-widest text-slate-500 ml-1">What is it for?</Label>
-          <Textarea 
-            placeholder="A short note about this payment..." 
-            value={note} 
+          <Textarea
+            placeholder="A short note about this payment..."
+            value={note}
             onChange={(event) => setNote(event.target.value)}
             className="min-h-[100px] rounded-2xl border-white/5 bg-white/5 p-5 font-bold focus:border-violet-500/50"
           />
@@ -927,8 +1223,8 @@ function Home({ navigate, initialParams, onComplete }) {
   );
 }
 
-function LandingPage({ navigate }) {
-  const { authenticated, login } = usePrivy();
+function LandingPage({ navigate, circle }) {
+  const { authenticated, login } = circle;
   const [menuOpen, setMenuOpen] = useState(false);
 
   function goTo(href) {
@@ -940,15 +1236,15 @@ function LandingPage({ navigate }) {
     <main className="overflow-hidden bg-[#05050a]">
       <section className="hero-net relative min-h-screen overflow-hidden px-4 pb-28">
         <div className="net-grid animate-fade-in-up" />
-        
-        <div className="hero-rise mx-auto flex h-20 max-w-7xl items-center justify-between">
+
+        <div className="hero-rise relative z-50 mx-auto flex h-20 max-w-7xl items-center justify-between">
           <button onClick={() => navigate("/")} className="flex items-center gap-3 transition-transform hover:scale-105 active:scale-95">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-600 text-white shadow-xl shadow-violet-600/30">
               <WalletCards className="h-6 w-6" />
             </span>
             <span className="text-2xl font-black tracking-tight text-white italic">ARCIS</span>
           </button>
-          
+
           <div className="relative">
             <button onClick={() => setMenuOpen((value) => !value)} className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white shadow-xl backdrop-blur-xl transition hover:bg-white/10" aria-expanded={menuOpen} aria-label="Open menu">
               <Menu className="h-6 w-6" />
@@ -963,7 +1259,7 @@ function LandingPage({ navigate }) {
           </div>
         </div>
         <div className="net-grid animate-fade-in-up" />
-        
+
         <div className="relative z-10 mx-auto flex max-w-5xl flex-col items-center">
           <button onClick={() => navigate("/dashboard")} className="hero-float mb-8 inline-flex items-center gap-3 rounded-full border border-white/20 bg-white/5 p-1 pr-5 text-sm text-slate-300 shadow-xl backdrop-blur-xl transition hover:bg-white/10">
             <span className="rounded-full bg-violet-600 px-4 py-1.5 font-bold text-white shadow-lg shadow-violet-600/30">NEW</span>
@@ -975,7 +1271,7 @@ function LandingPage({ navigate }) {
             The proof is <br />
             <span className="bg-gradient-to-r from-violet-400 via-fuchsia-400 to-emerald-400 bg-clip-text text-transparent italic">in the flow.</span>
           </h1>
-          
+
           <p className="hero-rise-delay-1 mt-8 max-w-2xl text-lg font-medium leading-relaxed text-slate-400 sm:text-xl">
             One-tap global USDC sends, reusable Pay Me links, and instant Arc Testnet proof wrapped in premium glassmorphism.
           </p>
@@ -1155,45 +1451,14 @@ function WhitepaperSection({ title, text }) {
   );
 }
 
-function WalletDebug({ show }) {
-  const { authenticated, ready, user } = usePrivy();
-  const { wallets } = useWallets();
-  const [waitedTooLong, setWaitedTooLong] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!show || !authenticated || wallets.length > 0) return;
-    const timer = setTimeout(() => setWaitedTooLong(true), 12000);
-    return () => clearTimeout(timer);
-  }, [show, authenticated, wallets.length]);
-
-  useEffect(() => {
-    if (waitedTooLong && wallets.length === 0) {
-      setError("It looks like the Privy wallet iframe is being blocked or taking too long. Please ensure http://localhost:5173 is added to 'Allowed Origins' in the Privy Dashboard.");
-    }
-  }, [waitedTooLong, wallets.length]);
-
-  if (!show || !authenticated || wallets.length > 0 || !waitedTooLong) return null;
-
-  return (
-    <div className="mx-auto mt-4 max-w-md rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200 shadow-lg animate-in fade-in slide-in-from-top-4">
-      <div className="flex gap-3">
-        <Loader2 className="h-5 w-5 shrink-0 animate-spin text-red-400" />
-        <div>
-          <p className="font-bold">Wallet setup hanging?</p>
-          <p className="mt-1 leading-6 opacity-80">{error}</p>
-          <a href="https://dashboard.privy.io" target="_blank" className="mt-2 inline-block font-semibold text-white underline">Open Privy Dashboard</a>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function App() {
-  const { authenticated } = usePrivy();
+  const circle = useCircleAuth();
+  const { authenticated } = circle;
   const [path, setPath] = useState(window.location.pathname);
   const [showSend, setShowSend] = useState(false);
   const [sendParams, setSendParams] = useState(null);
+  const [showFund, setShowFund] = useState(false);
+  const [showWithdraw, setShowWithdraw] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -1204,8 +1469,6 @@ export function App() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
-
-  const [showWithdraw, setShowWithdraw] = useState(false);
 
   function navigate(href) {
     if (href.startsWith("/send")) {
@@ -1222,37 +1485,88 @@ export function App() {
   const claimCode = path.match(/^\/claim\/([^/]+)/)?.[1];
   const flowSlug = path.match(/^\/flow\/([^/]+)/)?.[1];
 
-  const [notifications, setNotifications] = useState([
-    { id: 1, type: "received", title: "Money Received", message: "You just received 250 USDC from 0x1a2b...3c4d", read: false },
-    { id: 2, type: "claimed", title: "Link Claimed", message: "Your 'Design Work' Pay Me link was claimed by a recipient.", read: false }
-  ]);
+  const [notifications, setNotifications] = useState([]);
+  const [refreshToggle, setRefreshToggle] = useState(0);
 
-  const addNotification = (notif) => {
-    setNotifications(prev => [{ id: Date.now(), read: false, ...notif }, ...prev]);
-  };
+  // Real-time synchronization
+  useEffect(() => {
+    if (!circle.wallet || !isSupabaseConfigured) return;
+
+    const channel = supabase
+      .channel('realtime_transactions')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'transactions',
+          filter: `sender_wallet=eq.${circle.wallet}`
+        },
+        () => setRefreshToggle(prev => prev + 1)
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'transactions',
+          filter: `recipient_wallet=eq.${circle.wallet}`
+        },
+        (payload) => {
+          setRefreshToggle(prev => prev + 1);
+          if (payload.eventType === 'INSERT') {
+            setNotifications(prev => [{
+              id: Date.now(),
+              type: "received",
+              title: "Money Received",
+              message: `You just received ${payload.new.amount_usdc} USDC!`,
+              read: false
+            }, ...prev]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [circle.wallet]);
 
   return (
-    <div className="min-h-screen text-slate-50">
-      {authenticated && path !== "/" ? <TopBar navigate={navigate} notifications={notifications} onClear={() => setNotifications([])} /> : null}
-      <WalletDebug show={path !== "/" && authenticated} />
-      {path === "/dashboard" ? <Dashboard navigate={navigate} addNotification={addNotification} /> : path === "/profile" ? <ProfilePage /> : path === "/flow/new" ? <NewFlowLink /> : path === "/whitepaper" ? <WhitepaperPage navigate={navigate} /> : claimCode ? <ClaimPage code={claimCode} addNotification={addNotification} /> : flowSlug ? <FlowPay slug={flowSlug} navigate={navigate} /> : <LandingPage navigate={navigate} />}
-      {authenticated && path !== "/" && !claimCode ? <BottomNav path={path} navigate={navigate} onSend={() => setShowSend(true)} /> : null}
-      
+    <div className="min-h-screen bg-[#05050a] font-sans text-slate-200">
+      {path !== "/" && (
+        <TopBar navigate={navigate} notifications={notifications} onClear={() => setNotifications([])} circle={circle} />
+      )}
+
+      {path === "/" && <LandingPage navigate={navigate} circle={circle} />}
+      {path === "/dashboard" && <Dashboard navigate={navigate} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} setShowFund={setShowFund} refreshToggle={refreshToggle} />}
+      {path === "/profile" && <ProfilePage circle={circle} />}
+      {claimCode && <ClaimPage code={claimCode} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} refreshToggle={refreshToggle} />}
+      {path === "/flow/new" && <NewFlowLink circle={circle} />}
+      {flowSlug && <FlowPay slug={flowSlug} navigate={navigate} />}
+      {path === "/whitepaper" && <WhitepaperPage navigate={navigate} />}
+
+
+      {authenticated && path !== "/" && <BottomNav path={path} navigate={navigate} onSend={() => setShowSend(true)} />}
+
       {showSend && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[2.5rem] border border-white/10 bg-[#090812] shadow-2xl shadow-black/50">
-            <button 
-              onClick={() => { setShowSend(false); setSendParams(null); }}
-              className="absolute right-6 top-6 z-50 flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition"
-            >
-              <Plus className="h-6 w-6 rotate-45" />
-            </button>
+        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 p-4 backdrop-blur-sm sm:items-center">
+          <div className="w-full max-w-xl animate-in slide-in-from-bottom-10 bg-[#090812] rounded-[2.5rem] overflow-hidden">
             <div className="p-1">
-              <Home navigate={navigate} initialParams={sendParams} onComplete={() => setShowSend(false)} />
+              <Home initialParams={sendParams} onComplete={() => setShowSend(false)} navigate={navigate} circle={circle} />
             </div>
+            <Button variant="ghost" className="mb-4 mx-auto block text-slate-500" onClick={() => { setShowSend(false); setSendParams(null); }}>Dismiss</Button>
           </div>
         </div>
       )}
+
+      {circle.showLogin && (
+        <LoginModal
+          onClose={() => circle.setShowLogin(false)}
+          circle={circle}
+        />
+      )}
+
+      {showFund && <FundModal onClose={() => setShowFund(false)} wallet={circle.wallet} onComplete={circle.refresh} />}
+
 
       {showWithdraw && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-500">

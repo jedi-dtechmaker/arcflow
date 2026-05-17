@@ -2,14 +2,14 @@
   "name": "arcflow",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "yarn@4.14.1",
+  "packageManager": "yarn@1.22.22",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@privy-io/react-auth": "^3.25.0",
+    "@circle-fin/w3s-pw-web-sdk": "^1.1.11",
     "@supabase/supabase-js": "^2.49.4",
     "@tailwindcss/vite": "^4.1.5",
     "class-variance-authority": "^0.7.1",
@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.4.1",
-    "vite": "^7.2.7"
+    "vite": "^7.2.7",
+    "vite-plugin-node-polyfills": "^0.27.0"
   }
 }
