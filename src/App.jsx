@@ -978,7 +978,7 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
 
               <div className="mt-6 space-y-4">
                 {visible.length === 0 ? <div className="rounded-[2.5rem] border border-dashed border-white/10 p-12 text-center text-sm font-bold text-slate-600">No activity found.</div> : null}
-                {visible.map((row) => (
+                {visible.slice(0, 8).map((row) => (
                   <article key={row.id} className="glass-card flex items-center justify-between gap-4 rounded-[2rem] p-5 transition-all hover:bg-white/[0.08] group">
                     <div className="flex min-w-0 items-center gap-4">
                       <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${tab === "sent" ? "bg-white/5 text-slate-400" : "bg-emerald-500/10 text-emerald-400"} transition-colors group-hover:bg-violet-500/10 group-hover:text-violet-400`}>
