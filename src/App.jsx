@@ -41,6 +41,8 @@ import { claimPayment, createFlowLink, createPendingSend, getClaim, getDashboard
 import { formatUsd, makeClaimUrl, makeExplorerUrl, makeFlowUrl } from "@/lib/format";
 import { makeTinyPdf } from "@/lib/pdf";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { TransactionReceipt } from "@/components/TransactionReceipt";
+import { exportToPDF } from "@/lib/export";
 
 const fxRates = { USDC: 1, EURC: 0.92, BRLA: 5.12, MXN: 16.8, NGN: 1450 };
 const ARC_FAUCET_URL = "https://faucet.circle.com";
@@ -674,7 +676,7 @@ function BottomNav({ path, navigate, onSend }) {
   );
 }
 
-function AssetsPage({ circle }) {
+function AssetsPage({ circle, setSelectedTx }) {
   const { authenticated, ready, login, wallet } = circle;
   const { toast } = useToast();
   const [assets, setAssets] = useState({ flows: [], transactions: [] });
@@ -757,8 +759,12 @@ function AssetsPage({ circle }) {
                   const isSender = t.sender_wallet?.toLowerCase() === wallet.toLowerCase();
                   const statusColor = t.status === "claimed" || t.status === "completed" ? "text-emerald-400 bg-emerald-400/10" : "text-amber-400 bg-amber-400/10";
                   return (
-                    <div key={t.id} className="flex items-center justify-between rounded-2xl bg-white/5 p-4 border border-white/5 overflow-hidden">
-                      <div className="min-w-0">
+                    <div
+                      key={t.id}
+                      onClick={() => setSelectedTx(t)}
+                      className="flex items-center justify-between rounded-2xl bg-white/5 p-4 border border-white/5 overflow-hidden cursor-pointer hover:bg-white/10 transition-colors"
+                    >
+                      <div className="min-w-0 text-left">
                         <div className="flex items-center gap-2">
                           <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${statusColor}`}>
                             {t.status}
@@ -769,6 +775,7 @@ function AssetsPage({ circle }) {
                           {isSender ? `To: ${t.recipient_identifier || "Anonymous"}` : `From: ${t.sender_wallet?.slice(0, 8)}...`}
                         </p>
                       </div>
+                      <ChevronRight className="h-4 w-4 text-slate-600" />
                     </div>
                   );
                 })}
@@ -849,9 +856,9 @@ function ProfilePage({ circle }) {
   );
 }
 
-function Dashboard({ navigate, addNotification, circle, setShowFund, refreshToggle }) {
+function Dashboard({ navigate, addNotification, circle, setShowFund, refreshToggle, setSelectedTx }) {
   const { authenticated, login, user, wallet } = circle;
-  const [tab, setTab] = useState("sent");
+  const [tab, setTab] = useState("all");
   const [rows, setRows] = useState([]);
   const [balance, setBalance] = useState("0.00");
   const [loading, setLoading] = useState(false);
@@ -899,7 +906,13 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
   }
 
   if (!authenticated) return <CenteredCard><h1 className="text-3xl font-semibold text-white">Your ArcFlow dashboard</h1><p className="mt-2 text-slate-500">Login once to see sent payments, claims, and receipts.</p><Button className="mt-6 h-12 w-full rounded-2xl" onClick={login}>Login</Button></CenteredCard>;
-  const visible = rows.filter((row) => (tab === "sent" ? row.sender_wallet?.toLowerCase() === wallet?.toLowerCase() : row.recipient_wallet?.toLowerCase() === wallet?.toLowerCase()));
+
+  const visible = rows.filter((row) => {
+    if (tab === "all") return true;
+    if (tab === "sent") return row.sender_wallet?.toLowerCase() === wallet?.toLowerCase() && row.type !== 'deposit';
+    if (tab === "received") return row.recipient_wallet?.toLowerCase() === wallet?.toLowerCase() || row.type === 'deposit';
+    return true;
+  });
 
   const displayName = user?.email?.address?.split("@")[0] || "ArcFlow User";
 
@@ -973,27 +986,58 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
             <section className="mt-4 lg:mt-0">
               <div className="flex items-center justify-between px-2">
                 <h2 className="text-2xl font-black text-white">History</h2>
-                <button className="text-[10px] font-black text-violet-400 uppercase tracking-[0.2em] hover:text-violet-300 transition-colors">See All Activity</button>
+                <div className="flex items-center gap-1 bg-white/5 rounded-full p-1 border border-white/10">
+                  {["all", "sent", "received"].map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={`px-3 py-1 text-[9px] font-black uppercase tracking-widest rounded-full transition-all ${tab === t ? "bg-violet-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="mt-6 space-y-4">
                 {visible.length === 0 ? <div className="rounded-[2.5rem] border border-dashed border-white/10 p-12 text-center text-sm font-bold text-slate-600">No activity found.</div> : null}
-                {visible.slice(0, 8).map((row) => (
-                  <article key={row.id} className="glass-card flex items-center justify-between gap-4 rounded-[2rem] p-5 transition-all hover:bg-white/[0.08] group">
-                    <div className="flex min-w-0 items-center gap-4">
-                      <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${tab === "sent" ? "bg-white/5 text-slate-400" : "bg-emerald-500/10 text-emerald-400"} transition-colors group-hover:bg-violet-500/10 group-hover:text-violet-400`}>
-                        {tab === "sent" ? <ArrowUpRight className="h-6 w-6" /> : <ArrowDownLeft className="h-6 w-6" />}
+                {visible.slice(0, 10).map((row) => {
+                  const isSent = row.sender_wallet?.toLowerCase() === wallet?.toLowerCase() && row.type !== 'deposit';
+                  const isLogin = row.type === 'login';
+                  const isDeposit = row.type === 'deposit';
+
+                  return (
+                    <article
+                      key={row.id}
+                      onClick={() => setSelectedTx(row)}
+                      className="glass-card flex items-center justify-between gap-4 rounded-[2rem] p-5 transition-all hover:bg-white/[0.08] group cursor-pointer active:scale-[0.98]"
+                    >
+                      <div className="flex min-w-0 items-center gap-4">
+                        <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${isLogin ? "bg-violet-500/10 text-violet-400" :
+                          isDeposit || !isSent ? "bg-emerald-500/10 text-emerald-400" :
+                            "bg-white/5 text-slate-400"
+                          } transition-colors group-hover:bg-violet-500/10 group-hover:text-violet-400`}>
+                          {isLogin ? <User className="h-6 w-6" /> :
+                            isDeposit || !isSent ? <ArrowDownLeft className="h-6 w-6" /> :
+                              <ArrowUpRight className="h-6 w-6" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-base font-black text-white group-hover:text-violet-300 transition-colors">
+                            {isLogin ? "Session Login" : row.note || row.recipient_identifier || "ArcFlow Payment"}
+                          </p>
+                          <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                            {new Date(row.created_at).toLocaleDateString([], { month: "short", day: "numeric" })} • {row.status} • {row.type || 'transfer'}
+                          </p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-base font-black text-white group-hover:text-violet-300 transition-colors">{row.note || row.recipient_identifier || "ArcFlow Payment"}</p>
-                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">{new Date(row.created_at).toLocaleDateString([], { month: "short", day: "numeric" })} • {row.status}</p>
+                      <div className="shrink-0 text-right">
+                        <p className="text-lg font-black text-white">
+                          {isLogin ? "—" : (isSent ? "-" : "+")} {row.amount_usdc ? formatUsd(row.amount_usdc) : ""}
+                        </p>
                       </div>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-lg font-black text-white">{tab === "sent" ? "-" : "+"} {formatUsd(row.amount_usdc)}</p>
-                    </div>
-                  </article>
-                ))}
+                    </article>
+                  );
+                })}
               </div>
             </section>
           </div>
@@ -1616,6 +1660,7 @@ export function App() {
   const [sendParams, setSendParams] = useState(null);
   const [showFund, setShowFund] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
+  const [selectedTx, setSelectedTx] = useState(null);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -1694,8 +1739,8 @@ export function App() {
       )}
 
       {path === "/" && <LandingPage navigate={navigate} circle={circle} />}
-      {path === "/dashboard" && <Dashboard navigate={navigate} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} setShowFund={setShowFund} refreshToggle={refreshToggle} />}
-      {path === "/assets" && <AssetsPage circle={circle} />}
+      {path === "/dashboard" && <Dashboard navigate={navigate} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} setShowFund={setShowFund} refreshToggle={refreshToggle} setSelectedTx={setSelectedTx} />}
+      {path === "/assets" && <AssetsPage circle={circle} setSelectedTx={setSelectedTx} />}
       {path === "/profile" && <ProfilePage circle={circle} />}
       {claimCode && <ClaimPage code={claimCode} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} refreshToggle={refreshToggle} />}
       {path === "/flow/new" && <NewFlowLink circle={circle} />}
@@ -1746,6 +1791,109 @@ export function App() {
           </div>
         </div>
       )}
+
+      {selectedTx && (
+        <TransactionDetailModal
+          transaction={selectedTx}
+          onClose={() => setSelectedTx(null)}
+          wallet={circle.wallet}
+        />
+      )}
     </div>
   );
 }
+
+function TransactionDetailModal({ transaction, onClose, wallet }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      await exportToPDF("receipt-content", `receipt-${transaction.id.slice(0, 8)}.pdf`);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
+      <div className="relative w-full max-w-lg max-h-[95dvh] overflow-y-auto rounded-[3rem] border border-white/10 bg-[#090812] shadow-2xl p-6 sm:p-10">
+        <button onClick={onClose} className="absolute right-6 top-6 h-10 w-10 flex items-center justify-center rounded-full bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition-all">
+          <X className="h-5 w-5" />
+        </button>
+
+        <div className="text-center">
+          <div className={`mx-auto flex h-20 w-20 items-center justify-center rounded-[2rem] shadow-xl ${transaction.type === 'login' ? 'bg-violet-500/20 text-violet-400' :
+              transaction.type === 'deposit' ? 'bg-emerald-500/20 text-emerald-400' :
+                'bg-violet-500/20 text-violet-400'
+            }`}>
+            {transaction.type === 'login' ? <User className="h-10 w-10" /> :
+              transaction.type === 'deposit' ? <Plus className="h-10 w-10" /> :
+                <ArrowUpRight className="h-10 w-10" />}
+          </div>
+
+          <h2 className="mt-6 text-3xl font-black text-white capitalize">{transaction.type || 'Transfer'}</h2>
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mt-2">Activity Detail</p>
+        </div>
+
+        <div className="mt-10 space-y-4">
+          <div className="rounded-2xl bg-white/5 p-5 border border-white/5 space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Amount</span>
+              <span className="text-lg font-black text-white">{transaction.amount_usdc ? formatUsd(transaction.amount_usdc) : '—'}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Status</span>
+              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{transaction.status}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Date</span>
+              <span className="text-[10px] font-bold text-slate-300">{new Date(transaction.created_at).toLocaleString()}</span>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-white/5 p-5 border border-white/5 space-y-4">
+            <div className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Note</span>
+              <p className="text-sm font-bold text-white italic">"{transaction.note || 'No note added'}"</p>
+            </div>
+            {transaction.tx_hash && (
+              <div className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Transaction Hash</span>
+                <a href={makeExplorerUrl(transaction.tx_hash)} target="_blank" className="flex items-center gap-2 group">
+                  <p className="min-w-0 flex-1 truncate font-mono text-[10px] font-bold text-violet-400">{transaction.tx_hash}</p>
+                  <ExternalLink className="h-3 w-3 text-violet-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-10 grid gap-4">
+          {transaction.type !== 'login' && (
+            <Button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="h-16 rounded-2xl text-lg font-black shadow-xl shadow-violet-600/30"
+            >
+              {downloading ? <Loader2 className="h-6 w-6 animate-spin mr-2" /> : <Download className="h-6 w-6 mr-2" />}
+              Download Receipt
+            </Button>
+          )}
+          <Button variant="secondary" className="h-16 rounded-2xl font-bold" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+
+        {/* Hidden Receipt for Capturing */}
+        <div className="fixed -left-[2000px] top-0 overflow-hidden">
+          <TransactionReceipt transaction={transaction} wallet={wallet} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export { App as default };

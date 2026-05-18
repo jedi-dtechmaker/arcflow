@@ -9,7 +9,6 @@ async function api(path, method = "GET", body = null) {
   };
   if (body) options.body = JSON.stringify(body);
   const response = await fetch(`${BACKEND_URL}${path}`, options);
-  console.log(`[API] ${method} ${path} - Status: ${response.status}`);
 
   const contentType = response.headers.get("content-type");
   if (contentType && contentType.includes("application/json")) {

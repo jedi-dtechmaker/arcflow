@@ -124,10 +124,10 @@ app.post('/api/auth/otp/verify', async (req, res) => {
         }
 
         if (error) throw error;
-        handleSuccessfulAuth(res, email, data.user.id);
+        await handleSuccessfulAuth(res, email, data.user.id);
     } catch (error) {
         console.error('OTP Verify Error:', error);
-        res.status(401).json({ error: 'Invalid or expired OTP' });
+        res.status(401).json({ error: error.message || 'Invalid or expired OTP' });
     }
 });
 
@@ -141,11 +141,26 @@ app.post('/api/auth/external', async (req, res) => {
         // but we still track them as users.
         const { error } = await supabase.from('users').upsert({
             privy_id: address.toLowerCase(),
-            wallet_address: address.toLowerCase(),
-            updated_at: new Date().toISOString()
+            wallet_address: address.toLowerCase()
         }, { onConflict: 'privy_id' });
 
         if (error) throw error;
+
+        // Log Login Activity for External Wallet
+        try {
+            await supabase.from('transactions').insert({
+                sender_privy_id: address.toLowerCase(),
+                sender_wallet: address.toLowerCase(),
+                recipient_wallet: address.toLowerCase(), // Self-reference for login
+                amount_usdc: 0,
+                status: 'completed',
+                type: 'login',
+                note: 'Logged in with external wallet',
+                created_at: new Date().toISOString()
+            });
+        } catch (err) {
+            console.warn("Could not log external login activity:", err.message);
+        }
 
         res.json({
             success: true,
@@ -158,8 +173,46 @@ app.post('/api/auth/external', async (req, res) => {
     }
 });
 
-function handleSuccessfulAuth(res, email, supabaseUid) {
+async function handleSuccessfulAuth(res, email, supabaseUid) {
     const wallet = getManagedWallet(email);
+
+    // Log Login Activity
+    try {
+        console.log(`[DB] Logging login for: ${email}`);
+        const { error: insertErr } = await supabase.from('transactions').insert({
+            sender_privy_id: email,
+            sender_wallet: wallet.address,
+            recipient_wallet: wallet.address, // Self-reference
+            amount_usdc: 0,
+            status: 'completed',
+            type: 'login',
+            note: 'Logged in to platform',
+            created_at: new Date().toISOString()
+        });
+        if (insertErr) console.error("[DB] Login log error:", insertErr.message);
+        else console.log("[DB] Login log successful");
+    } catch (err) {
+        console.warn("[DB] Could not log login activity:", err.message);
+    }
+
+    try {
+        console.log(`[DB] Upserting user: ${email}`);
+        const { error: upsertErr } = await supabase.from('users').upsert({
+            privy_id: email,
+            wallet_address: wallet.address
+        }, { onConflict: 'privy_id' });
+
+        if (upsertErr) {
+            console.error("[DB] User upsert error:", upsertErr.message);
+            // We don't throw here to allow login to continue even if tracking fails
+        } else {
+            console.log("[DB] User upsert successful");
+        }
+    } catch (err) {
+        console.warn("[DB] User upsert failed unexpectedly:", err.message);
+    }
+
+    console.log(`[AUTH] Login successful for: ${email}`);
     res.json({
         success: true,
         userId: email,
@@ -243,6 +296,21 @@ app.post('/api/fund', async (req, res) => {
             functionName: "transfer",
             args: [targetWallet, parseUnits(requestedAmount.toString(), 6)]
         });
+
+        // Log Deposit Activity
+        try {
+            await supabase.from('transactions').insert({
+                recipient_wallet: targetWallet,
+                amount_usdc: requestedAmount,
+                status: 'completed',
+                type: 'deposit',
+                tx_hash: txHash,
+                note: 'Testnet Faucet Deposit',
+                created_at: new Date().toISOString()
+            });
+        } catch (err) {
+            console.warn("Could not log deposit activity:", err.message);
+        }
 
         res.json({ success: true, txHash, amount: requestedAmount });
     } catch (error) {
@@ -343,6 +411,8 @@ app.post('/api/db/transaction', async (req, res) => {
         if (id) {
             result = await supabase.from('transactions').update(body).eq('id', id).select().single();
         } else {
+            // Default to 'transfer' if type not provided
+            if (!body.type) body.type = 'transfer';
             result = await supabase.from('transactions').insert(body).select().single();
         }
         if (result.error) throw result.error;
