@@ -69,20 +69,19 @@ app.post('/api/auth/otp/send', async (req, res) => {
         const { email } = req.body;
         if (!email) return res.status(400).json({ error: 'Email is required' });
 
-        try {
-            const { error } = await supabase.auth.signInWithOtp({
-                email,
-                options: { shouldCreateUser: true }
+        const { data, error } = await supabase.auth.signInWithOtp({
+            email: email.trim().toLowerCase(),
+            options: { shouldCreateUser: true }
+        });
+
+        if (error) {
+            console.error('Supabase signInWithOtp Error:', error);
+            return res.status(400).json({ 
+                error: error.message || 'Failed to send OTP. Please check your Supabase Email provider settings or SMTP limit.' 
             });
-            if (error) {
-                console.warn('Supabase OTP Warning (falling back to test mode):', error.message);
-                return res.json({ success: true, message: "OTP sent (Test fallback code: 123456)" });
-            }
-            res.json({ success: true, message: "OTP sent to your email" });
-        } catch (supabaseErr) {
-            console.warn('Supabase OTP Error (falling back to test mode):', supabaseErr.message);
-            res.json({ success: true, message: "OTP sent (Test fallback code: 123456)" });
         }
+
+        res.json({ success: true, message: "OTP sent to your email" });
     } catch (error) {
         console.error('OTP Send Error:', error.message);
         res.status(500).json({ error: error.message });
@@ -95,23 +94,21 @@ app.post('/api/auth/otp/verify', async (req, res) => {
         const { email, code } = req.body;
         if (!email || !code) return res.status(400).json({ error: 'Email and code are required' });
 
-        // Instant test-mode fallback check
-        if (code.trim() === '123456') {
-            return await handleSuccessfulAuth(res, email, `user_${Date.now()}`);
-        }
+        const cleanEmail = email.trim().toLowerCase();
+        const cleanCode = code.trim();
 
         // Try 'signup' type first
         let { data, error } = await supabase.auth.verifyOtp({
-            email,
-            token: code,
+            email: cleanEmail,
+            token: cleanCode,
             type: 'signup'
         });
 
         // If that fails, try 'magiclink'
         if (error) {
             const retry = await supabase.auth.verifyOtp({
-                email,
-                token: code,
+                email: cleanEmail,
+                token: cleanCode,
                 type: 'magiclink'
             });
             data = retry.data;
@@ -121,8 +118,8 @@ app.post('/api/auth/otp/verify', async (req, res) => {
         // Final fallback: try 'email'
         if (error) {
             const retry = await supabase.auth.verifyOtp({
-                email,
-                token: code,
+                email: cleanEmail,
+                token: cleanCode,
                 type: 'email'
             });
             data = retry.data;
@@ -130,21 +127,18 @@ app.post('/api/auth/otp/verify', async (req, res) => {
         }
 
         if (error) {
-            // If Supabase check fails but user gave 6-digit code, allow testnet access
-            if (code.length === 6) {
-                return await handleSuccessfulAuth(res, email, `user_${Date.now()}`);
-            }
-            throw error;
+            console.error('Supabase verifyOtp Error:', error);
+            return res.status(401).json({ error: error.message || 'Invalid or expired OTP code' });
         }
 
-        await handleSuccessfulAuth(res, email, data?.user?.id || `user_${Date.now()}`);
+        await handleSuccessfulAuth(res, cleanEmail, data?.user?.id || cleanEmail);
     } catch (error) {
         console.error('OTP Verify Error:', error);
         res.status(401).json({ error: error.message || 'Invalid or expired OTP' });
     }
 });
 
-// 2.5 Telegram 1-Tap Auth Endpoint
+// 2.5 Telegram 1-Tap Auth Endpoint (Real deterministic wallet for Telegram user)
 app.post('/api/auth/telegram', async (req, res) => {
     try {
         const { telegramId, username, firstName } = req.body;

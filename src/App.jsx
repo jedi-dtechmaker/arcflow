@@ -228,9 +228,7 @@ function LoginModal({ onClose, circle }) {
       const res = await circle.sendOtp(email.trim().toLowerCase());
       if (res.success) {
         setStep("verify");
-        if (res.message && res.message.includes("123456")) {
-          toast({ title: "Test Mode Active", description: "Use code 123456 to verify." });
-        }
+        toast({ title: "OTP Sent", description: `Check your inbox at ${email.trim()}` });
       } else {
         throw new Error(res.error || "Could not send OTP");
       }
