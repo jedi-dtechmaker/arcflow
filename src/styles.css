@@ -169,3 +169,70 @@ body {
 .hero-float {
   animation: hero-float 6s ease-in-out infinite;
 }
+
+/* Stacked Credit Card System (Inspired by reference UI) */
+.card-stack-container {
+  position: relative;
+  width: 100%;
+  padding-top: 1rem;
+}
+
+.stacked-card-bg-2 {
+  position: absolute;
+  top: 0;
+  left: 5%;
+  right: 5%;
+  height: 80%;
+  border-radius: 2rem;
+  background: linear-gradient(135deg, rgba(30, 27, 75, 0.7) 0%, rgba(15, 13, 35, 0.9) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transform: translateY(-12px) scale(0.92);
+  opacity: 0.6;
+}
+
+.stacked-card-bg-1 {
+  position: absolute;
+  top: 0;
+  left: 2.5%;
+  right: 2.5%;
+  height: 90%;
+  border-radius: 2.25rem;
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.5) 0%, rgba(124, 58, 237, 0.3) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transform: translateY(-6px) scale(0.96);
+  opacity: 0.85;
+}
+
+.stacked-card-main {
+  position: relative;
+  z-index: 10;
+  border-radius: 2.5rem;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #9333ea 100%);
+  box-shadow: 
+    0 20px 40px -15px rgba(124, 58, 237, 0.5),
+    0 0 50px 0 rgba(79, 70, 229, 0.3);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.stacked-card-main::before {
+  content: "";
+  position: absolute;
+  top: -50%;
+  right: -30%;
+  width: 250px;
+  height: 250px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.25) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* Horizontal Scrollbar hide */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+

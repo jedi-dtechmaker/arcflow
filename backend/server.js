@@ -6,6 +6,7 @@ import { createWalletClient, http, defineChain, parseUnits, erc20Abi, keccak256,
 import { privateKeyToAccount } from 'viem/accounts';
 import { createClient } from '@supabase/supabase-js';
 import multer from 'multer';
+import { startBotServer } from './bot.js';
 dotenv.config();
 
 const app = express();
@@ -519,4 +520,5 @@ app.get('/api/db/user/assets', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`ArcFlow backend running on http://localhost:${PORT}`);
+    startBotServer();
 });

@@ -43,6 +43,12 @@ import { makeTinyPdf } from "@/lib/pdf";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { TransactionReceipt } from "@/components/TransactionReceipt";
 import { exportToPDF } from "@/lib/export";
+import { BalanceCard } from "@/components/BalanceCard";
+import { QuickTransferBar } from "@/components/QuickTransferBar";
+import { QuickTransferModal } from "@/components/QuickTransferModal";
+import { TransactionHistory } from "@/components/TransactionHistory";
+import { BottomNav } from "@/components/BottomNav";
+import { setupTelegramUI, getTelegramUser, isTelegramWebApp, triggerTelegramHaptic } from "@/lib/telegram";
 
 const fxRates = { USDC: 1, EURC: 0.92, BRLA: 5.12, MXN: 16.8, NGN: 1450 };
 const ARC_FAUCET_URL = "https://faucet.circle.com";
@@ -634,48 +640,6 @@ function TopBar({ navigate, notifications, onClear, circle }) {
   );
 }
 
-function BottomNav({ path, navigate, onSend }) {
-  const items = [
-    { label: "Home", icon: LayoutDashboard, href: "/dashboard" },
-    { label: "Assets", icon: WalletCards, href: "/assets" },
-    { label: "Send", icon: ArrowUpRight, onClick: onSend, primary: true },
-    { label: "Pay Me", icon: Link2, href: "/flow/new" },
-    { label: "Menu", icon: User, href: "/profile" }
-  ];
-
-  return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pb-8 pt-2 px-4 pointer-events-none">
-      <div className="flex w-full max-w-md items-center justify-between rounded-[2.5rem] bg-[#0a0a0f]/90 p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] backdrop-blur-3xl pointer-events-auto border border-white/5">
-        {items.map((item) => {
-          const Icon = item.icon;
-          const active = path === item.href;
-          if (item.primary) {
-            return (
-              <button
-                key={item.label}
-                onClick={item.onClick}
-                className="flex h-16 w-16 -translate-y-8 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white shadow-[0_15px_30px_rgba(139,92,246,0.4)] transition-transform hover:scale-110 active:scale-95"
-              >
-                <Icon className="h-8 w-8" />
-              </button>
-            );
-          }
-          return (
-            <button
-              key={item.label}
-              onClick={() => navigate(item.href)}
-              className={`flex flex-col items-center justify-center gap-1.5 px-4 py-2 transition-all ${active ? "text-violet-400" : "text-slate-500 hover:text-slate-300"}`}
-            >
-              <Icon className="h-6 w-6" />
-              <span className="text-[10px] font-black uppercase tracking-tighter">{item.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </nav>
-  );
-}
-
 function AssetsPage({ circle, setSelectedTx }) {
   const { authenticated, ready, login, wallet } = circle;
   const { toast } = useToast();
@@ -856,9 +820,9 @@ function ProfilePage({ circle }) {
   );
 }
 
-function Dashboard({ navigate, addNotification, circle, setShowFund, refreshToggle, setSelectedTx }) {
+function Dashboard({ navigate, addNotification, circle, setShowFund, refreshToggle, setSelectedTx, onOpenSendModal }) {
   const { authenticated, login, user, wallet } = circle;
-  const [tab, setTab] = useState("all");
+  const { toast } = useToast();
   const [rows, setRows] = useState([]);
   const [balance, setBalance] = useState("0.00");
   const [loading, setLoading] = useState(false);
@@ -874,7 +838,7 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
       const client = createPublicClient({ chain: arcTestnet, transport: http(ARC_RPC_URL) });
       const [dashboardRows, erc20Balance, nativeBalance] = await Promise.all([
         getDashboardRows(wallet).catch((err) => {
-          console.warn("Could not fetch activity from Supabase (tables might be missing):", err.message);
+          console.warn("Could not fetch activity from Supabase:", err.message);
           return [];
         }),
         client.readContract({ address: USDC_ADDRESS, abi: erc20Abi, functionName: "balanceOf", args: [wallet] }).catch(() => 0n),
@@ -888,7 +852,6 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
 
       const newBalanceStr = totalBalance.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-      // Notify if balance increased
       if (balance !== "0.00" && totalBalance > Number(balance.replace(/,/g, ''))) {
         addNotification({
           type: "received",
@@ -905,143 +868,85 @@ function Dashboard({ navigate, addNotification, circle, setShowFund, refreshTogg
     }
   }
 
-  if (!authenticated) return <CenteredCard><h1 className="text-3xl font-semibold text-white">Your ArcFlow dashboard</h1><p className="mt-2 text-slate-500">Login once to see sent payments, claims, and receipts.</p><Button className="mt-6 h-12 w-full rounded-2xl" onClick={login}>Login</Button></CenteredCard>;
+  if (!authenticated) return (
+    <CenteredCard>
+      <h1 className="text-3xl font-semibold text-white">Your ArcFlow Dashboard</h1>
+      <p className="mt-2 text-slate-500">Sign in to view your balance, send money, and manage receipts.</p>
+      <Button className="mt-6 h-12 w-full rounded-2xl font-bold" onClick={login}>Connect Account</Button>
+    </CenteredCard>
+  );
 
-  const visible = rows.filter((row) => {
-    if (tab === "all") return true;
-    if (tab === "sent") return row.sender_wallet?.toLowerCase() === wallet?.toLowerCase() && row.type !== 'deposit';
-    if (tab === "received") return row.recipient_wallet?.toLowerCase() === wallet?.toLowerCase() || row.type === 'deposit';
-    return true;
-  });
+  const tgUser = getTelegramUser();
+  const displayName = tgUser
+    ? (`${tgUser.first_name || ""} ${tgUser.last_name || ""}`.trim() || tgUser.username || "Telegram User")
+    : (user?.email?.address?.split("@")[0] || "Bardia Adibi");
 
-  const displayName = user?.email?.address?.split("@")[0] || "ArcFlow User";
+  const recentContacts = useMemo(() => {
+    const map = new Map();
+    rows.forEach(r => {
+      if (r.recipient_identifier && r.recipient_identifier !== "Claim Link") {
+        if (!map.has(r.recipient_identifier)) {
+          map.set(r.recipient_identifier, {
+            name: r.recipient_name || r.recipient_identifier.split("@")[0],
+            identifier: r.recipient_identifier,
+            seed: r.recipient_identifier
+          });
+        }
+      }
+    });
+    return Array.from(map.values());
+  }, [rows]);
 
   return (
-    <main className="min-h-screen bg-[#05050a] pb-40 pt-20">
-      <div className="mx-auto max-w-7xl lg:px-8 lg:pt-12">
-        <div className="grid gap-0 lg:grid-cols-[1fr_1.2fr] lg:gap-12 lg:pt-12">
-
-          {/* Left Column: Immersive Header & Assets */}
-          <div className="space-y-0 lg:space-y-8">
-            <section className="relative mesh-gradient overflow-hidden pb-16 pt-10 text-center text-white shadow-2xl lg:rounded-[3rem] lg:pb-12">
-              <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/40" />
-
-              <div className="relative z-10 mx-auto max-w-lg px-6">
-                <div className="flex items-center justify-between opacity-90">
-                  <Avatar seed={displayName} size="md" />
-                  <div className="flex h-10 items-center gap-2 rounded-full bg-white/10 px-4 backdrop-blur">
-                    <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-[10px] font-black uppercase tracking-widest">Arc Testnet</span>
-                  </div>
-                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 backdrop-blur">
-                    <RefreshCcw className={`h-5 w-5 ${loading ? "animate-spin" : ""}`} onClick={refresh} />
-                  </span>
-                </div>
-
-                <div className="mt-10 animate-fade-in-up">
-                  <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-50">Current Balance</p>
-                  <h1 className="mt-2 text-5xl font-black tracking-tight sm:text-6xl">${balance}</h1>
-                  <div className="mx-auto mt-5 flex w-fit items-center gap-2 rounded-full bg-white/10 px-3 py-1 backdrop-blur-xl">
-                    <WalletCards className="h-3.5 w-3.5 opacity-60" />
-                    <span className="text-[9px] font-black uppercase tracking-widest opacity-80">Accounts</span>
-                  </div>
-                </div>
-
-                <div className="mt-12 flex justify-around gap-2 animate-fade-in-up [animation-delay:200ms]">
-                  <HeaderAction icon={Plus} label="Add" onClick={() => setShowFund(true)} />
-                  <HeaderAction icon={ArrowUpRight} label="Send" onClick={() => navigate("/send")} />
-                  <HeaderAction icon={Link2} label="Pay Me" onClick={() => navigate("/flow/new")} />
-                  <HeaderAction icon={Download} label="Withdraw" onClick={() => setShowWithdraw(true)} />
-                </div>
-              </div>
-            </section>
-
-            <div className="mx-auto max-w-lg px-6 lg:max-w-none lg:px-0">
-              <section className="glass-card mt-4 lg:-translate-y-8 animate-fade-in-up overflow-hidden rounded-[2.5rem] p-6 [animation-delay:400ms] lg:translate-y-0">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <h3 className="text-xl font-black text-white">Receive assets</h3>
-                    <p className="mt-1 text-sm font-medium text-slate-500">Copy your unique address to receive money.</p>
-                  </div>
-                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-violet-600/10 text-violet-400">
-                    <WalletCards className="h-6 w-6" />
-                  </span>
-                </div>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(wallet);
-                    toast({ title: "Address Copied!" });
-                  }}
-                  className="mt-6 flex h-14 w-full items-center justify-center gap-3 rounded-2xl bg-violet-600 font-black text-white shadow-xl shadow-violet-600/40 transition-transform active:scale-95"
-                >
-                  <Copy className="h-5 w-5" />
-                  Copy Address
-                </button>
-              </section>
+    <main className="min-h-screen bg-[#070611] pb-36 pt-24 text-slate-100">
+      <div className="mx-auto max-w-lg px-4 sm:px-6">
+        {/* Top Header / Profile Bar */}
+        <div className="flex items-center justify-between py-2 mb-4">
+          <div className="flex items-center gap-3">
+            <Avatar seed={displayName} size="sm" />
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Welcome Back</p>
+              <h2 className="text-base font-black text-white capitalize tracking-tight">{displayName}</h2>
             </div>
           </div>
-
-          {/* Right Column: History */}
-          <div className="mx-auto w-full max-w-lg px-6 lg:max-w-none lg:px-0">
-            <section className="mt-4 lg:mt-0">
-              <div className="flex items-center justify-between px-2">
-                <h2 className="text-2xl font-black text-white">History</h2>
-                <div className="flex items-center gap-1 bg-white/5 rounded-full p-1 border border-white/10">
-                  {["all", "sent", "received"].map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setTab(t)}
-                      className={`px-3 py-1 text-[9px] font-black uppercase tracking-widest rounded-full transition-all ${tab === t ? "bg-violet-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"}`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mt-6 space-y-4">
-                {visible.length === 0 ? <div className="rounded-[2.5rem] border border-dashed border-white/10 p-12 text-center text-sm font-bold text-slate-600">No activity found.</div> : null}
-                {visible.slice(0, 10).map((row) => {
-                  const isSent = row.sender_wallet?.toLowerCase() === wallet?.toLowerCase() && row.type !== 'deposit';
-                  const isLogin = row.type === 'login';
-                  const isDeposit = row.type === 'deposit';
-
-                  return (
-                    <article
-                      key={row.id}
-                      onClick={() => setSelectedTx(row)}
-                      className="glass-card flex items-center justify-between gap-4 rounded-[2rem] p-5 transition-all hover:bg-white/[0.08] group cursor-pointer active:scale-[0.98]"
-                    >
-                      <div className="flex min-w-0 items-center gap-4">
-                        <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${isLogin ? "bg-violet-500/10 text-violet-400" :
-                          isDeposit || !isSent ? "bg-emerald-500/10 text-emerald-400" :
-                            "bg-white/5 text-slate-400"
-                          } transition-colors group-hover:bg-violet-500/10 group-hover:text-violet-400`}>
-                          {isLogin ? <User className="h-6 w-6" /> :
-                            isDeposit || !isSent ? <ArrowDownLeft className="h-6 w-6" /> :
-                              <ArrowUpRight className="h-6 w-6" />}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-base font-black text-white group-hover:text-violet-300 transition-colors">
-                            {isLogin ? "Session Login" : row.note || row.recipient_identifier || "ArcFlow Payment"}
-                          </p>
-                          <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">
-                            {new Date(row.created_at).toLocaleDateString([], { month: "short", day: "numeric" })} • {row.status} • {row.type || 'transfer'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-lg font-black text-white">
-                          {isLogin ? "—" : (isSent ? "-" : "+")} {row.amount_usdc ? formatUsd(row.amount_usdc) : ""}
-                        </p>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-          </div>
+          <button
+            onClick={() => toast({ title: "Account Settings", description: "Privy wallet & account ready" })}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition"
+          >
+            <User className="h-4 w-4" />
+          </button>
         </div>
+
+        {/* Stacked Balance Card */}
+        <BalanceCard
+          balance={balance}
+          wallet={wallet}
+          loading={loading}
+          onRefresh={refresh}
+          onSend={() => onOpenSendModal?.("")}
+          onReceive={() => {
+            if (wallet) {
+              navigator.clipboard.writeText(wallet);
+              toast({ title: "Address Copied!", description: wallet });
+            }
+          }}
+          onFund={() => setShowFund(true)}
+          onPayMe={() => navigate("/flow/new")}
+        />
+
+        {/* Quick Transfer Contact Avatars Bar */}
+        <QuickTransferBar
+          recentContacts={recentContacts}
+          onSelectContact={(identifier) => onOpenSendModal?.(identifier)}
+          onNewTransfer={() => onOpenSendModal?.("")}
+        />
+
+        {/* Transaction History Section */}
+        <TransactionHistory
+          rows={rows}
+          wallet={wallet}
+          onSelectTx={setSelectedTx}
+        />
       </div>
     </main>
   );
@@ -1664,6 +1569,7 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
+    setupTelegramUI();
   }, []);
 
   useEffect(() => {
@@ -1673,6 +1579,7 @@ export function App() {
   }, []);
 
   function navigate(href) {
+    triggerTelegramHaptic("selection");
     if (href.startsWith("/send")) {
       const params = new URLSearchParams(href.split("?")[1]);
       setSendParams(Object.fromEntries(params.entries()));
@@ -1689,6 +1596,59 @@ export function App() {
 
   const [notifications, setNotifications] = useState([]);
   const [refreshToggle, setRefreshToggle] = useState(0);
+  const [showQuickModal, setShowQuickModal] = useState(false);
+  const [quickRecipient, setQuickRecipient] = useState("");
+  const [quickSendBusy, setQuickSendBusy] = useState(false);
+  const { toast } = useToast();
+
+  const handleOpenSendModal = (recipient = "") => {
+    setQuickRecipient(recipient);
+    setShowQuickModal(true);
+  };
+
+  const handleQuickSendMoney = async ({ amount, recipient, note, receipt, useLink }) => {
+    if (!circle.authenticated) {
+      circle.login();
+      return;
+    }
+    if (!circle.wallet) {
+      toast({ title: "Wallet is setting up", description: "Please wait a moment and try again.", tone: "error" });
+      return;
+    }
+
+    setQuickSendBusy(true);
+    try {
+      const pending = await createPendingSend({
+        amount: Number(amount),
+        recipient: useLink ? "Claim Link" : recipient,
+        note,
+        targetAsset: "USDC",
+        receipt,
+        senderPrivyId: circle.user?.id,
+        senderWallet: circle.wallet
+      });
+
+      if (pending.recipientWallet) {
+        const txHash = await sendUsdcOnArc({
+          userId: circle.user.id,
+          recipient: pending.recipientWallet,
+          amount: amount.toString()
+        });
+        await markSendComplete(pending.id, txHash, circle.wallet);
+        triggerTelegramHaptic("notification", "success");
+        toast({ title: "Money Sent!", description: `Sent $${amount} USDC on Arc Testnet.` });
+      } else {
+        triggerTelegramHaptic("notification", "success");
+        toast({ title: "Claim Link Created", description: "Share the link so the recipient can attach their wallet." });
+      }
+      setShowQuickModal(false);
+      setRefreshToggle(prev => prev + 1);
+    } catch (err) {
+      toast({ title: "Send failed", description: err instanceof Error ? err.message : "Please try again.", tone: "error" });
+    } finally {
+      setQuickSendBusy(false);
+    }
+  };
 
   // Real-time synchronization
   useEffect(() => {
@@ -1739,7 +1699,17 @@ export function App() {
       )}
 
       {path === "/" && <LandingPage navigate={navigate} circle={circle} />}
-      {path === "/dashboard" && <Dashboard navigate={navigate} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} setShowFund={setShowFund} refreshToggle={refreshToggle} setSelectedTx={setSelectedTx} />}
+      {path === "/dashboard" && (
+        <Dashboard
+          navigate={navigate}
+          addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])}
+          circle={circle}
+          setShowFund={setShowFund}
+          refreshToggle={refreshToggle}
+          setSelectedTx={setSelectedTx}
+          onOpenSendModal={handleOpenSendModal}
+        />
+      )}
       {path === "/assets" && <AssetsPage circle={circle} setSelectedTx={setSelectedTx} />}
       {path === "/profile" && <ProfilePage circle={circle} />}
       {claimCode && <ClaimPage code={claimCode} addNotification={(n) => setNotifications([...notifications, { ...n, id: Date.now(), read: false }])} circle={circle} refreshToggle={refreshToggle} />}
@@ -1748,7 +1718,23 @@ export function App() {
       {path === "/whitepaper" && <WhitepaperPage navigate={navigate} />}
 
 
-      {authenticated && path !== "/" && <BottomNav path={path} navigate={navigate} onSend={() => setShowSend(true)} />}
+      {authenticated && path !== "/" && (
+        <BottomNav
+          path={path}
+          navigate={navigate}
+          onSend={() => handleOpenSendModal("")}
+        />
+      )}
+
+      {showQuickModal && (
+        <QuickTransferModal
+          onClose={() => setShowQuickModal(false)}
+          initialRecipient={quickRecipient}
+          wallet={circle.wallet}
+          onSendMoney={handleQuickSendMoney}
+          busy={quickSendBusy}
+        />
+      )}
 
       {showSend && (
         <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 p-4 backdrop-blur-sm sm:items-center">

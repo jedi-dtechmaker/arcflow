@@ -6,6 +6,7 @@
     "type": "module",
     "scripts": {
         "start": "node server.js",
+        "bot": "node bot.js",
         "build": "npm install",
         "dev": "node --watch server.js"
     },
@@ -17,6 +18,7 @@
         "dotenv": "^16.4.5",
         "express": "^4.19.2",
         "multer": "^2.1.1",
+        "node-telegram-bot-api": "^0.66.0",
         "uuid": "^9.0.1",
         "viem": "^2.49.3"
     }
