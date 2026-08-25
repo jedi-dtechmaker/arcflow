@@ -8,6 +8,7 @@ const token = process.env.TELEGRAM_BOT_TOKEN;
 const webAppUrl = (process.env.WEB_APP_URL || process.env.VITE_APP_URL || "https://arcflow.vercel.app").replace(/\/$/, "");
 
 console.log(`🌐 Telegram Mini App configured to open: ${webAppUrl}`);
+const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
