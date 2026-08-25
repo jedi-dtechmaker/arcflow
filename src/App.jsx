@@ -70,7 +70,6 @@ function useCircleAuth() {
     try {
       const response = await fetch(`${BACKEND_URL}/api/db/user/wallet?id=${userId}`);
       if (!response.ok) {
-        // Fallback for direct managed derivation if DB lookup fails
         setWallet(localStorage.getItem("circle_wallet_address"));
         return;
       }
@@ -83,6 +82,36 @@ function useCircleAuth() {
       console.error("Refresh failed:", err);
     }
   }, []);
+
+  const loginWithTelegram = useCallback(async (tgUser) => {
+    if (!tgUser) return { success: false, error: "No Telegram user found" };
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/telegram`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          telegramId: tgUser.id,
+          username: tgUser.username,
+          firstName: tgUser.first_name
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        handleLoginSuccess(data);
+      }
+      return data;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }, []);
+
+  // Auto-login if opened in Telegram
+  useEffect(() => {
+    const tgUser = getTelegramUser();
+    if (tgUser && !authenticated) {
+      loginWithTelegram(tgUser);
+    }
+  }, [authenticated, loginWithTelegram]);
 
   useEffect(() => {
     if (authenticated) refresh();
@@ -97,11 +126,8 @@ function useCircleAuth() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email })
       });
-      const ct = res.headers.get("content-type");
-      if (!ct || !ct.includes("application/json")) {
-        throw new Error(`Server returned non-JSON. Check if VITE_BACKEND_URL is correct.`);
-      }
-      return res.json();
+      const data = await res.json();
+      return data;
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -114,10 +140,6 @@ function useCircleAuth() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, code })
       });
-      const ct = res.headers.get("content-type");
-      if (!ct || !ct.includes("application/json")) {
-        throw new Error(`Server returned non-JSON. Check if VITE_BACKEND_URL is correct.`);
-      }
       const data = await res.json();
       if (data.success) {
         handleLoginSuccess(data);
@@ -162,7 +184,7 @@ function useCircleAuth() {
     setWallet(null);
   };
 
-  return { authenticated, user, wallet, setWallet, ready, login, sendOtp, verifyOtp, connectExternal, logout, refresh, showLogin, setShowLogin };
+  return { authenticated, user, wallet, setWallet, ready, login, sendOtp, verifyOtp, loginWithTelegram, connectExternal, logout, refresh, showLogin, setShowLogin };
 }
 
 function openFaucet() {
@@ -170,13 +192,32 @@ function openFaucet() {
 }
 
 function LoginModal({ onClose, circle }) {
-  const [tab, setTab] = useState("email"); // email | wallet
-  const [step, setStep] = useState("input"); // input | verify
+  const tgUser = getTelegramUser();
+  const [tab, setTab] = useState(tgUser ? "telegram" : "email");
+  const [step, setStep] = useState("input");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { toast } = useToast();
+
+  async function handleTelegramLogin() {
+    if (!tgUser) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await circle.loginWithTelegram(tgUser);
+      if (res.success) {
+        toast({ title: "Welcome back!", description: `Logged in as @${tgUser.username || tgUser.first_name}` });
+      } else {
+        throw new Error(res.error || "Telegram login failed");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function handleSend(e) {
     if (e) e.preventDefault();
@@ -185,8 +226,14 @@ function LoginModal({ onClose, circle }) {
     setError("");
     try {
       const res = await circle.sendOtp(email.trim().toLowerCase());
-      if (res.success) setStep("verify");
-      else throw new Error(res.error || "Could not send OTP");
+      if (res.success) {
+        setStep("verify");
+        if (res.message && res.message.includes("123456")) {
+          toast({ title: "Test Mode Active", description: "Use code 123456 to verify." });
+        }
+      } else {
+        throw new Error(res.error || "Could not send OTP");
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -237,7 +284,24 @@ function LoginModal({ onClose, circle }) {
             <p className="mt-3 text-slate-400 font-medium">Connect to your ArcFlow account</p>
           </div>
 
-          <div className="mt-10 flex gap-2 rounded-2xl bg-white/5 p-1.5">
+          {/* Quick Telegram Button if opened in Telegram */}
+          {tgUser && (
+            <div className="mt-8">
+              <Button
+                onClick={handleTelegramLogin}
+                disabled={busy}
+                className="h-14 w-full rounded-2xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-black text-base shadow-xl shadow-sky-500/20 flex items-center justify-center gap-2"
+              >
+                {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <span>1-Tap Login as @{tgUser.username || tgUser.first_name}</span>}
+              </Button>
+              <div className="relative my-6 text-center text-xs font-bold text-slate-600">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10" /></div>
+                <span className="relative bg-[#090812] px-3 uppercase tracking-wider">Or continue with</span>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 flex gap-2 rounded-2xl bg-white/5 p-1.5">
             <button onClick={() => setTab("email")} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${tab === "email" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Email OTP</button>
             <button onClick={() => setTab("wallet")} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${tab === "wallet" ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>Connect Wallet</button>
           </div>
